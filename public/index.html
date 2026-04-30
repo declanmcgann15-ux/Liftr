@@ -271,6 +271,8 @@ function AppInner({user}) {
     try { await sb.from(table).upsert({user_id:user.id, data},{onConflict:"user_id"}); } catch(e){}
   },[user.id]);
 
+  const [loaded, setLoaded] = useState(false);
+
   useEffect(()=>{
     async function load() {
       setSyncing(true);
@@ -293,6 +295,7 @@ function AppInner({user}) {
         }
       } catch(e){console.error(e);}
       setSyncing(false);
+      setLoaded(true);
     }
     load();
   },[user.id]);
@@ -300,7 +303,7 @@ function AppInner({user}) {
   useEffect(()=>{ if(!syncing) upsert("workouts",workouts); },[workouts]);
   useEffect(()=>{ if(!syncing) upsert("measurements",measurements); },[measurements]);
   useEffect(()=>{ if(!syncing) upsert("nutrition",nutrition); },[nutrition]);
-  useEffect(()=>{ if(!syncing) upsert("user_settings",{themePref,customEx,profile,nutTargets,manualWeight,usdaKey}); },[themePref,customEx,profile,nutTargets,manualWeight,usdaKey]);
+  useEffect(()=>{ if(loaded) upsert("user_settings",{themePref,customEx,profile,nutTargets,manualWeight,usdaKey}); },[themePref,customEx,profile,nutTargets,manualWeight,usdaKey,loaded]);
 
   // Workout timer
   useEffect(()=>{
