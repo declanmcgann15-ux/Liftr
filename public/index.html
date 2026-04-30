@@ -258,6 +258,7 @@ function AppInner({user}) {
   const [foodErr, setFoodErr] = useState("");
   const [selFood, setSelFood] = useState(null);
   const [foodQty, setFoodQty] = useState("1");
+  const [foodUnit, setFoodUnit] = useState("serving");
   const [foodSaved, setFoodSaved] = useState(false);
   const [editTargets, setEditTargets] = useState(false);
   const [targetDraft, setTargetDraft] = useState({calories:2500,protein:180,carbs:250,fat:80});
@@ -397,8 +398,18 @@ function AppInner({user}) {
   // Body helpers
   function saveMeas() { const w=parseFloat(measWeight); if(!w||!measDate)return; setMeasurements(p=>[...p,{id:Date.now(),date:new Date(measDate).toISOString(),weight:w}].sort((a,b)=>new Date(a.date)-new Date(b.date))); setMeasWeight(""); setMeasSaved(true); setTimeout(()=>setMeasSaved(false),1800); }
   function delMeas(id) { setMeasurements(p=>p.filter(m=>m.id!==id)); }
-  function saveManW() { setManualWeight(weightDraft); setWeightSaved(true); setTimeout(()=>setWeightSaved(false),2000); }
-  function saveProfile() { setProfile(profileDraft); setProfileSaved(true); setTimeout(()=>setProfileSaved(false),2000); }
+  function saveManW() {
+    setManualWeight(weightDraft);
+    setWeightSaved(true);
+    setTimeout(()=>setWeightSaved(false),2000);
+    upsert("user_settings",{themePref,customEx,profile,nutTargets,manualWeight:weightDraft,usdaKey});
+  }
+  function saveProfile() {
+    setProfile(profileDraft);
+    setProfileSaved(true);
+    setTimeout(()=>setProfileSaved(false),2000);
+    upsert("user_settings",{themePref,customEx,profile:profileDraft,nutTargets,manualWeight,usdaKey});
+  }
 
   // Nutrition helpers
   async function searchFood(q) {
@@ -461,15 +472,63 @@ function AppInner({user}) {
     setFoodLoading(false);
   }
 
-  async function pickFood(food) {
-    setSelFood(food); setFoodQty("1");
+  // Debounced food search
+  const searchDebounceRef = useRef(null);
+  function handleFoodQueryChange(val) {
+    setFoodQuery(val);
+    setFoodResults([]);
+    setSelFood(null);
+    if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+    if (val.trim().length >= 2) {
+      searchDebounceRef.current = setTimeout(() => searchFood(val), 500);
+    }
   }
+  function pickFood(food) { setSelFood(food); setFoodQty("1"); setFoodUnit("serving"); }
+  // Unit conversion to grams
+  const UNIT_TO_G = {
+    "g": 1, "oz": 28.3495, "lb": 453.592, "cup": 240,
+    "tbsp": 15, "tsp": 5, "ml": 1, "fl oz": 29.5735,
+  };
+
+  function calcServingMultiplier(qty, unit, food) {
+    const q = parseFloat(qty) || 1;
+    if (unit === "serving") return q;
+    // Convert to grams then divide by food's per-serving grams
+    const unitG = UNIT_TO_G[unit] || 1;
+    const totalG = q * unitG;
+    // Estimate food's serving size in grams
+    const servingStr = food.serving || "";
+    const servingMatch = servingStr.match(/(\d+\.?\d*)\s*(g|ml|oz|lb|cup|tbsp|tsp)?/i);
+    let servingG = 100; // default per 100g
+    if (servingMatch) {
+      const sVal = parseFloat(servingMatch[1]);
+      const sUnit = (servingMatch[2]||"g").toLowerCase();
+      servingG = sVal * (UNIT_TO_G[sUnit] || 1);
+    }
+    return totalG / servingG;
+  }
+
+  function getAdjustedMacros(food, qty, unit) {
+    const m = calcServingMultiplier(qty, unit, food);
+    return {
+      calories: Math.round((food.calories||0) * m),
+      protein:  Math.round((food.protein||0)  * m),
+      carbs:    Math.round((food.carbs||0)    * m),
+      fat:      Math.round((food.fat||0)      * m),
+    };
+  }
+
   function logFood() {
-    if(!selFood)return;
-    const m=parseFloat(foodQty)||1;
-    const d=new Date(); d.setDate(d.getDate()-nutDay);
-    setNutrition(p=>[{id:Date.now(),date:d.toISOString(),name:selFood.name,brand:selFood.brand,calories:Math.round((selFood.calories||0)*m),protein:Math.round((selFood.protein||0)*m),carbs:Math.round((selFood.carbs||0)*m),fat:Math.round((selFood.fat||0)*m),serving:selFood.serving,qty:m},...p]);
-    setSelFood(null); setFoodQuery(""); setFoodResults([]); setFoodQty("1");
+    if(!selFood) return;
+    const macros = getAdjustedMacros(selFood, foodQty, foodUnit);
+    const servingLabel = foodUnit === "serving"
+      ? (parseFloat(foodQty)!==1 ? foodQty+" x "+selFood.serving : selFood.serving)
+      : foodQty+" "+foodUnit;
+    const d = new Date(); d.setDate(d.getDate()-nutDay);
+    setNutrition(p=>[{id:Date.now(),date:d.toISOString(),name:selFood.name,brand:selFood.brand,
+      calories:macros.calories,protein:macros.protein,carbs:macros.carbs,fat:macros.fat,
+      serving:servingLabel,qty:parseFloat(foodQty)||1},...p]);
+    setSelFood(null); setFoodQuery(""); setFoodResults([]); setFoodQty("1"); setFoodUnit("serving");
     setFoodSaved(true); setTimeout(()=>setFoodSaved(false),1800); setNutView("day");
   }
   function delFood(id) { setNutrition(p=>p.filter(e=>e.id!==id)); }
@@ -1250,7 +1309,7 @@ function AppInner({user}) {
               </div>
             )}
 
-            {nutView==="log" && <button onClick={()=>setNutView("day")} style={{...btn("sm"),marginBottom:16}}>Back</button>}
+            {nutView==="log" && <button onClick={()=>{setNutView("day");setFoodQuery("");setFoodResults([]);setSelFood(null);}} style={{...btn("sm"),marginBottom:16}}>Back</button>}
 
             {nutView==="day" && (
               <div>
@@ -1322,37 +1381,60 @@ function AppInner({user}) {
               <div>
                 <div style={{marginBottom:16}}>
                   <div style={lbl}>Search Food</div>
-                  <div style={{display:"flex",gap:8}}>
-                    <input style={{...inp,flex:1}} placeholder="e.g. chicken breast, banana..." value={foodQuery} onChange={e=>setFoodQuery(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")searchFood(foodQuery);}}/>
-                    <button style={btn("primary")} onClick={()=>searchFood(foodQuery)}>Search</button>
+                  <div style={{position:"relative"}}>
+                    <input style={inp} placeholder="e.g. chicken breast, banana..." value={foodQuery}
+                      onChange={e=>handleFoodQueryChange(e.target.value)}
+                      onKeyDown={e=>{if(e.key==="Enter")searchFood(foodQuery);}}/>
+                    {foodLoading && <div style={{position:"absolute",right:12,top:"50%",transform:"translateY(-50%)",fontSize:11,color:T.textFaint,fontFamily:"'DM Sans',sans-serif"}}>...</div>}
                   </div>
-                  {foodLoading && <div style={{fontSize:12,color:T.textFaint,fontFamily:"'DM Sans',sans-serif",marginTop:8}}>Searching...</div>}
                   {foodErr && <div style={{fontSize:12,color:T.danger,fontFamily:"'DM Sans',sans-serif",marginTop:8}}>{foodErr}</div>}
                   {!usdaKey && <div style={{fontSize:11,color:T.textFaint,fontFamily:"'DM Sans',sans-serif",marginTop:6}}>Add your USDA API key in Settings for best results. Open Food Facts works without a key.</div>}
                 </div>
-                {selFood && (
-                  <div style={{...card,background:T.accentDark,border:"1px solid "+T.accentBorder,marginBottom:16}}>
-                    <div style={{fontSize:16,fontWeight:700,color:T.textPrimary,textTransform:"capitalize",marginBottom:2}}>{selFood.name}</div>
-                    <div style={{fontSize:12,color:T.textFaint,fontFamily:"'DM Sans',sans-serif",marginBottom:14}}>{selFood.brand} - per {selFood.qty} {selFood.serving}</div>
-                    <div style={{display:"flex",gap:12,marginBottom:16}}>
-                      {[["Cal",Math.round((selFood.calories||0)*(parseFloat(foodQty)||1)),"kcal",T.textPrimary],["P",Math.round((selFood.protein||0)*(parseFloat(foodQty)||1)),"g","#60a5fa"],["C",Math.round((selFood.carbs||0)*(parseFloat(foodQty)||1)),"g","#a78bfa"],["F",Math.round((selFood.fat||0)*(parseFloat(foodQty)||1)),"g","#fb923c"]].map(([l,v,u,c])=>(
-                        <div key={l} style={{flex:1,textAlign:"center",background:"rgba(0,0,0,0.15)",borderRadius:10,padding:"8px 4px"}}>
-                          <div style={{fontSize:10,color:T.textFaint,fontFamily:"'DM Sans',sans-serif",fontWeight:600,textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:3}}>{l}</div>
-                          <div style={{fontSize:18,fontWeight:700,fontFamily:"'DM Mono',monospace",color:c}}>{v}</div>
-                          <div style={{fontSize:10,color:T.textFaint,fontFamily:"'DM Sans',sans-serif"}}>{u}</div>
+                {selFood && (()=>{
+                  const macros = getAdjustedMacros(selFood, foodQty, foodUnit);
+                  const units = ["serving","g","oz","lb","cup","tbsp","tsp"];
+                  return (
+                    <div style={{...card,background:T.accentDark,border:"1px solid "+T.accentBorder,marginBottom:16}}>
+                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:12}}>
+                        <div style={{flex:1,minWidth:0}}>
+                          <div style={{fontSize:16,fontWeight:700,color:T.textPrimary,textTransform:"capitalize"}}>{selFood.name}</div>
+                          <div style={{fontSize:12,color:T.textFaint,fontFamily:"'DM Sans',sans-serif",marginTop:2}}>{selFood.brand}</div>
                         </div>
-                      ))}
-                    </div>
-                    <div style={{display:"flex",gap:10,alignItems:"flex-end"}}>
-                      <div style={{flex:1}}>
-                        <div style={{fontSize:11,color:T.textFaint,fontFamily:"'DM Sans',sans-serif",marginBottom:6}}>Servings</div>
-                        <input style={inp} type="number" step="0.5" min="0.5" value={foodQty} onChange={e=>setFoodQty(e.target.value)}/>
+                        <button onClick={()=>{setSelFood(null);}} style={{background:"none",border:"none",color:T.textFaint,cursor:"pointer",fontSize:18,padding:"0 4px"}}>x</button>
                       </div>
-                      <button style={{...btn("primary"),flex:2,padding:"11px 0"}} onClick={logFood}>Log Food</button>
+
+                      {/* Quantity + Unit row */}
+                      <div style={{display:"flex",gap:8,marginBottom:16}}>
+                        <div style={{flex:1}}>
+                          <div style={{fontSize:11,color:T.textFaint,fontFamily:"'DM Sans',sans-serif",marginBottom:6}}>Amount</div>
+                          <input style={{...inp,textAlign:"center",fontSize:18,fontWeight:700,fontFamily:"'DM Mono',monospace"}} type="number" step="0.25" min="0.25" value={foodQty} onChange={e=>setFoodQty(e.target.value)}/>
+                        </div>
+                        <div style={{flex:1}}>
+                          <div style={{fontSize:11,color:T.textFaint,fontFamily:"'DM Sans',sans-serif",marginBottom:6}}>Unit</div>
+                          <select style={{...sel,textAlign:"center",fontSize:14,fontWeight:600}} value={foodUnit} onChange={e=>setFoodUnit(e.target.value)}>
+                            {units.map(u=>(
+                              <option key={u} value={u}>{u==="serving"?(selFood.serving||"serving"):u}</option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+
+                      {/* Live macro display */}
+                      <div style={{display:"flex",gap:8,marginBottom:16}}>
+                        {[["Cal",macros.calories,"kcal",T.textPrimary],["P",macros.protein,"g","#60a5fa"],["C",macros.carbs,"g","#a78bfa"],["F",macros.fat,"g","#fb923c"]].map(([l,v,u,c])=>(
+                          <div key={l} style={{flex:1,textAlign:"center",background:"rgba(0,0,0,0.2)",borderRadius:10,padding:"10px 4px"}}>
+                            <div style={{fontSize:10,color:T.textFaint,fontFamily:"'DM Sans',sans-serif",fontWeight:600,textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:4}}>{l}</div>
+                            <div style={{fontSize:20,fontWeight:700,fontFamily:"'DM Mono',monospace",color:c,lineHeight:1}}>{v}</div>
+                            <div style={{fontSize:10,color:T.textFaint,fontFamily:"'DM Sans',sans-serif",marginTop:2}}>{u}</div>
+                          </div>
+                        ))}
+                      </div>
+
+                      <button style={{...btn("primary"),width:"100%",padding:"13px 0"}} onClick={logFood}>Log Food</button>
+                      {foodSaved && <div style={{marginTop:10,fontSize:13,color:T.accentText,fontFamily:"'DM Sans',sans-serif",textAlign:"center"}}>Added!</div>}
                     </div>
-                    {foodSaved && <div style={{marginTop:10,fontSize:13,color:T.accentText,fontFamily:"'DM Sans',sans-serif"}}>Added!</div>}
-                  </div>
-                )}
+                  );
+                })()}
                 {foodResults.length>0&&!selFood && (
                   <div>
                     <div style={lbl}>Results</div>
@@ -1524,7 +1606,7 @@ function AppInner({user}) {
                   )}
                 </div>
               ))}
-              {editTargets && <button style={{...btn("primary"),width:"100%",marginTop:14}} onClick={()=>{setNutTargets(targetDraft);setEditTargets(false);}}>Save Targets</button>}
+              {editTargets && <button style={{...btn("primary"),width:"100%",marginTop:14}} onClick={()=>{setNutTargets(targetDraft);setEditTargets(false);upsert("user_settings",{themePref,customEx,profile,nutTargets:targetDraft,manualWeight,usdaKey});}}>Save Targets</button>}
               {currentWeight && (
                 <div style={{marginTop:14,background:T.accentDark,border:"1px solid "+T.accentBorder,borderRadius:10,padding:"12px 14px"}}>
                   <div style={{fontSize:12,color:T.textFaint,fontFamily:"'DM Sans',sans-serif",marginBottom:4}}>Protein guide for {currentWeight} lbs:</div>
@@ -1596,7 +1678,7 @@ function AppInner({user}) {
               </div>
               <div>
                 <div style={{fontSize:11,color:T.textFaint,marginBottom:6,fontFamily:"'DM Sans',sans-serif"}}>USDA API Key (free)</div>
-                <input style={inp} type="text" placeholder="Paste your USDA API key here" value={usdaKey} onChange={e=>setUsdaKey(e.target.value)}/>
+                <input style={inp} type="text" placeholder="Paste your USDA API key here" value={usdaKey} onChange={e=>setUsdaKey(e.target.value)} onBlur={()=>upsert("user_settings",{themePref,customEx,profile,nutTargets,manualWeight,usdaKey})}/>
               </div>
               {usdaKey && <div style={{marginTop:10,fontSize:12,color:T.accentText,fontFamily:"'DM Sans',sans-serif"}}>USDA key saved. Both databases active.</div>}
               {!usdaKey && <div style={{marginTop:10,fontSize:12,color:T.textFaint,fontFamily:"'DM Sans',sans-serif"}}>Only Open Food Facts active (packaged foods). Add USDA key for whole foods.</div>}
