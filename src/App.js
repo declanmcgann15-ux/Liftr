@@ -1,230 +1,143 @@
-
-
 import { useState, useEffect, useRef, useCallback } from "react";
+import { supabase } from "./lib/supabase";
 
-const STORAGE_KEY  = "workout_tracker_data";
-const WEIGHT_KEY   = "liftr_weight";
-const MEASURES_KEY = "liftr_measurements";
-const THEME_KEY    = "liftr_theme"; // "auto" | "dark" | "light"
-const CUSTOM_EX_KEY = "liftr_custom_exercises"; // [name, ...]
+// Storage
+const SK  = "liftr_workouts";
+const MK  = "liftr_measurements";
+const CXK = "liftr_custom_exercises";
+const TK  = "liftr_theme";
 
+// Constants
 const MUSCLE_GROUPS = ["Chest","Back","Shoulders","Biceps","Triceps","Legs","Core","Full Body"];
 const CARDIO_TYPES  = ["Run","Bike","Row","Swim","Elliptical","Stair Climber","Walk"];
+const REST_PRESETS  = [30,60,90,120,180,240];
 
-const STRENGTH_MET = { light:[2.5,3.5], moderate:[3.5,5.0], hard:[5.0,6.5] };
-const CARDIO_MET = {
-  Run:            { light:[7.0,8.5],  moderate:[9.0,10.5],  hard:[11.0,13.0] },
-  Bike:           { light:[5.5,7.0],  moderate:[7.5,9.5],   hard:[10.0,12.0] },
-  Row:            { light:[4.5,6.0],  moderate:[6.5,8.0],   hard:[8.5,10.5]  },
-  Swim:           { light:[5.0,6.5],  moderate:[7.0,8.5],   hard:[9.0,11.0]  },
-  Elliptical:     { light:[4.5,6.0],  moderate:[6.5,8.0],   hard:[8.5,10.0]  },
-  "Stair Climber":{ light:[4.0,5.5],  moderate:[6.0,7.5],   hard:[8.0,9.5]   },
-  Walk:           { light:[2.5,3.5],  moderate:[3.5,4.5],   hard:[4.5,5.5]   },
+const SMETS = { light:[2.5,3.5], moderate:[3.5,5.0], hard:[5.0,6.5] };
+const CMETS = {
+  Run:           {light:[7.0,8.5],  moderate:[9.0,10.5],  hard:[11.0,13.0]},
+  Bike:          {light:[5.5,7.0],  moderate:[7.5,9.5],   hard:[10.0,12.0]},
+  Row:           {light:[4.5,6.0],  moderate:[6.5,8.0],   hard:[8.5,10.5]},
+  Swim:          {light:[5.0,6.5],  moderate:[7.0,8.5],   hard:[9.0,11.0]},
+  Elliptical:    {light:[4.5,6.0],  moderate:[6.5,8.0],   hard:[8.5,10.0]},
+  "Stair Climber":{light:[4.0,5.5], moderate:[6.0,7.5],   hard:[8.0,9.5]},
+  Walk:          {light:[2.5,3.5],  moderate:[3.5,4.5],   hard:[4.5,5.5]},
 };
 
-const EXERCISE_MUSCLE_MAP = {
-  "Ab Wheel":           "Core",
-  "Arnold Press":       "Shoulders",
-  "Barbell Curl":       "Biceps",
-  "Barbell Row":        "Back",
-  "Bench Press":        "Chest",
-  "Burpee":             "Full Body",
-  "Cable Fly":          "Chest",
-  "Cable Row":          "Back",
-  "Calf Raise":         "Legs",
-  "Clean":              "Full Body",
-  "Close Grip Bench":   "Triceps",
-  "Crunch":             "Core",
-  "Deadlift":           "Back",
-  "Dips":               "Chest",
-  "Dumbbell Curl":      "Biceps",
-  "Face Pull":          "Shoulders",
-  "Front Raise":        "Shoulders",
-  "Hammer Curl":        "Biceps",
-  "Incline Press":      "Chest",
-  "Kettlebell Swing":   "Full Body",
-  "Lat Pulldown":       "Back",
-  "Lateral Raise":      "Shoulders",
-  "Leg Curl":           "Legs",
-  "Leg Extension":      "Legs",
-  "Leg Press":          "Legs",
-  "Leg Raise":          "Core",
-  "Lunges":             "Legs",
-  "Overhead Extension": "Triceps",
-  "Overhead Press":     "Shoulders",
-  "Plank":              "Core",
-  "Preacher Curl":      "Biceps",
-  "Pull-Up":            "Back",
-  "Push-Up":            "Chest",
-  "Romanian Deadlift":  "Legs",
-  "Russian Twist":      "Core",
-  "Skull Crusher":      "Triceps",
-  "Snatch":             "Full Body",
-  "Squat":              "Legs",
-  "Thruster":           "Full Body",
-  "Tricep Pushdown":    "Triceps",
+const EX_MAP = {
+  "Ab Wheel":"Core","Arnold Press":"Shoulders","Barbell Curl":"Biceps",
+  "Barbell Row":"Back","Bench Press":"Chest","Burpee":"Full Body",
+  "Cable Fly":"Chest","Cable Row":"Back","Calf Raise":"Legs",
+  "Clean":"Full Body","Close Grip Bench":"Triceps","Crunch":"Core",
+  "Deadlift":"Back","Dips":"Chest","Dumbbell Curl":"Biceps",
+  "Face Pull":"Shoulders","Front Raise":"Shoulders","Hammer Curl":"Biceps",
+  "Incline Press":"Chest","Kettlebell Swing":"Full Body","Lat Pulldown":"Back",
+  "Lateral Raise":"Shoulders","Leg Curl":"Legs","Leg Extension":"Legs",
+  "Leg Press":"Legs","Leg Raise":"Core","Lunges":"Legs",
+  "Overhead Extension":"Triceps","Overhead Press":"Shoulders","Plank":"Core",
+  "Preacher Curl":"Biceps","Pull-Up":"Back","Push-Up":"Chest",
+  "Romanian Deadlift":"Legs","Russian Twist":"Core","Skull Crusher":"Triceps",
+  "Snatch":"Full Body","Squat":"Legs","Thruster":"Full Body",
+  "Tricep Pushdown":"Triceps",
 };
+const DEFAULT_EX = Object.keys(EX_MAP).sort();
 
-const DEFAULT_EXERCISES = Object.keys(EXERCISE_MUSCLE_MAP).sort();
+// Utilities
+function isDarkHour() { const h = new Date().getHours(); return h < 6 || h >= 20; }
 
-
-
-// Light mode: 6am–8pm  |  Dark mode: 8pm–6am
-function shouldUseDark() {
-  const h = new Date().getHours();
-  return h < 6 || h >= 20;
+function calcCals(type, sub, intensity, mins, lbs) {
+  if (!lbs || !mins) return null;
+  const kg = parseFloat(lbs) * 0.453592;
+  const hr = mins / 60;
+  const met = type === "strength"
+    ? (SMETS[intensity] || SMETS.moderate)
+    : ((CMETS[sub] || CMETS.Run)[intensity] || CMETS.Run.moderate);
+  return { low: Math.round(met[0]*kg*hr), high: Math.round(met[1]*kg*hr) };
 }
 
-// ── Theme tokens ──────────────────────────────────────────────────────────────
-function buildTheme(dark) {
-  const accent       = "#2563eb";
-  const accentDim    = dark ? "rgba(37,99,235,0.15)"  : "rgba(37,99,235,0.1)";
-  const accentBorder = dark ? "rgba(37,99,235,0.35)"  : "rgba(37,99,235,0.3)";
-  const accentDark   = dark ? "rgba(37,99,235,0.08)"  : "rgba(37,99,235,0.06)";
-  const accentText   = dark ? "#93c5fd" : "#1d4ed8";
-  const danger       = "#ef4444";
-  const dangerDim    = dark ? "rgba(239,68,68,0.15)" : "rgba(239,68,68,0.08)";
-  const dangerBorder = dark ? "rgba(239,68,68,0.2)"  : "rgba(239,68,68,0.2)";
-  const cardio       = dark ? "#7dd3fc" : "#38bdf8";
-  const cardioDim    = dark ? "rgba(125,211,252,0.12)"  : "rgba(56,189,248,0.1)";
-  const cardioText   = dark ? "#bae6fd" : "#0284c7";
+function calcBMR(lbs, inches, age, sex) {
+  if (!lbs || !inches || !age) return null;
+  const kg = parseFloat(lbs) * 0.453592;
+  const cm = parseFloat(inches) * 2.54;
+  const a  = parseFloat(age);
+  if (isNaN(kg)||isNaN(cm)||isNaN(a)) return null;
+  return sex === "female"
+    ? Math.round(10*kg + 6.25*cm - 5*a - 161)
+    : Math.round(10*kg + 6.25*cm - 5*a + 5);
+}
 
+function fmtDate(iso) {
+  return new Date(iso).toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"});
+}
+function fmtShort(iso) {
+  return new Date(iso).toLocaleDateString("en-US",{month:"short",day:"numeric"});
+}
+function fmtDur(m) {
+  if (!m) return "0m";
+  if (m < 60) return m+"m";
+  const h = Math.floor(m/60), r = m%60;
+  return r ? h+"h "+r+"m" : h+"h";
+}
+
+function theme(dark) {
   return {
     dark,
-    accent, accentDim, accentBorder, accentDark, accentText,
-    danger, dangerDim, dangerBorder,
-    cardio, cardioDim, cardioText,
-
-    // Backgrounds
-    bg:         dark ? "#0a0a0f" : "#f5f5f0",
-    bgCard:     dark ? "rgba(255,255,255,0.04)" : "#ffffff",
-    bgCardBorder:dark? "rgba(255,255,255,0.07)" : "rgba(0,0,0,0.08)",
-    bgInput:    dark ? "rgba(255,255,255,0.05)" : "#ffffff",
-    bgInputBorder:dark? "rgba(255,255,255,0.1)" : "rgba(0,0,0,0.15)",
-    bgNav:      dark ? "rgba(10,10,15,0.96)"    : "rgba(245,245,240,0.96)",
-    bgNavBorder:dark ? "rgba(255,255,255,0.07)" : "rgba(0,0,0,0.08)",
-    bgModal:    dark ? "#13131a"                : "#f9f9f6",
-    bgSm:       dark ? "rgba(255,255,255,0.07)" : "rgba(0,0,0,0.06)",
-    bgSmBorder: dark ? "rgba(255,255,255,0.1)"  : "rgba(0,0,0,0.12)",
-    bgSecondary:dark ? "rgba(255,255,255,0.07)" : "rgba(0,0,0,0.05)",
-    bgSecBorder:dark ? "rgba(255,255,255,0.1)"  : "rgba(0,0,0,0.1)",
-    bgGhost:    dark ? "none"                   : "none",
-    bgGhostBorder:dark?"rgba(255,255,255,0.08)" : "rgba(0,0,0,0.1)",
-    divider:    dark ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.07)",
-    overlay:    dark ? "rgba(0,0,0,0.75)"       : "rgba(0,0,0,0.4)",
-
-    // Text
-    textPrimary: dark ? "#f9fafb"  : "#111827",
-    textBody:    dark ? "#f3f4f6"  : "#1f2937",
-    textMuted:   dark ? "#9ca3af"  : "#6b7280",
-    textFaint:   dark ? "#6b7280"  : "#9ca3af",
-    textVeryFaint:dark? "#4b5563"  : "#d1d5db",
-    textSub:     dark ? "#4b5563"  : "#9ca3af",
-    logoText:    dark ? accentText : accentText,
-
-    // Nav
-    navIconActive: accent,
-    navIconInactive: dark ? "#4b5563" : "#9ca3af",
-    navLabelActive: dark ? "#93c5fd" : "#1d4ed8",
-    navLabelInactive: dark ? "#4b5563" : "#9ca3af",
-
-    // Scrollbar
-    scrollThumb: dark ? "rgba(255,255,255,0.1)" : "rgba(0,0,0,0.15)",
+    accent:"#2563eb", accentDim:dark?"rgba(37,99,235,0.15)":"rgba(37,99,235,0.1)",
+    accentBorder:dark?"rgba(37,99,235,0.35)":"rgba(37,99,235,0.3)",
+    accentDark:dark?"rgba(37,99,235,0.08)":"rgba(37,99,235,0.06)",
+    accentText:dark?"#93c5fd":"#1d4ed8",
+    danger:"#ef4444", dangerDim:dark?"rgba(239,68,68,0.15)":"rgba(239,68,68,0.08)",
+    dangerBorder:dark?"rgba(239,68,68,0.25)":"rgba(239,68,68,0.2)",
+    cardio:dark?"#7dd3fc":"#38bdf8", cardioDim:dark?"rgba(125,211,252,0.12)":"rgba(56,189,248,0.1)",
+    cardioText:dark?"#bae6fd":"#0284c7",
+    bg:dark?"#0a0a0f":"#f5f5f0",
+    bgCard:dark?"rgba(255,255,255,0.04)":"#ffffff",
+    bgCardBorder:dark?"rgba(255,255,255,0.07)":"rgba(0,0,0,0.08)",
+    bgInput:dark?"rgba(255,255,255,0.05)":"#ffffff",
+    bgInputBorder:dark?"rgba(255,255,255,0.12)":"rgba(0,0,0,0.15)",
+    bgNav:dark?"rgba(10,10,15,0.97)":"rgba(245,245,240,0.97)",
+    bgNavBorder:dark?"rgba(255,255,255,0.07)":"rgba(0,0,0,0.08)",
+    bgModal:dark?"#13131a":"#f9f9f6",
+    bgSm:dark?"rgba(255,255,255,0.07)":"rgba(0,0,0,0.06)",
+    bgSmBorder:dark?"rgba(255,255,255,0.1)":"rgba(0,0,0,0.12)",
+    bgGhost:dark?"rgba(255,255,255,0.08)":"rgba(0,0,0,0.07)",
+    overlay:dark?"rgba(0,0,0,0.75)":"rgba(0,0,0,0.4)",
+    divider:dark?"rgba(255,255,255,0.06)":"rgba(0,0,0,0.07)",
+    textPrimary:dark?"#f9fafb":"#111827",
+    textBody:dark?"#f3f4f6":"#1f2937",
+    textMuted:dark?"#9ca3af":"#6b7280",
+    textFaint:dark?"#6b7280":"#9ca3af",
+    textVeryFaint:dark?"#4b5563":"#d1d5db",
+    navActive:"#2563eb", navInactive:dark?"#4b5563":"#9ca3af",
+    navLabelActive:dark?"#93c5fd":"#1d4ed8",
+    navLabelInactive:dark?"#4b5563":"#9ca3af",
   };
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-function calcCalorieRange(type, subtype, intensity, durationMins, weightLbs) {
-  if (!weightLbs || !durationMins) return null;
-  const kg = parseFloat(weightLbs) * 0.453592;
-  const hrs = durationMins / 60;
-  const met = type === "strength"
-    ? (STRENGTH_MET[intensity] || STRENGTH_MET.moderate)
-    : ((CARDIO_MET[subtype] || CARDIO_MET.Run)[intensity] || CARDIO_MET.Run.moderate);
-  return { low: Math.round(met[0]*kg*hrs), high: Math.round(met[1]*kg*hrs) };
-}
-function formatDate(iso) { return new Date(iso).toLocaleDateString("en-US",{ month:"short", day:"numeric", year:"numeric" }); }
-function formatShortDate(iso) { return new Date(iso).toLocaleDateString("en-US",{ month:"short", day:"numeric" }); }
-function formatDuration(mins) {
-  if (!mins) return "0m";
-  if (mins < 60) return `${mins}m`;
-  const h = Math.floor(mins/60), m = mins%60;
-  return m ? `${h}h ${m}m` : `${h}h`;
-}
-
-// ── Sub-components ────────────────────────────────────────────────────────────
-
-function StatCard({ label, value, sub, T }) {
-  return (
-    <div style={{ background:T.bgCard, border:`1px solid ${T.bgCardBorder}`, borderRadius:12, padding:"16px 20px", flex:1, minWidth:0 }}>
-      <div style={{ fontSize:11, letterSpacing:"0.1em", textTransform:"uppercase", color:T.textFaint, marginBottom:6, fontFamily:"'DM Sans',sans-serif", fontWeight:600 }}>{label}</div>
-      <div style={{ fontSize:28, fontWeight:700, color:T.textPrimary, fontFamily:"'DM Mono',monospace" }}>{value}</div>
-      {sub && <div style={{ fontSize:12, color:T.textMuted, marginTop:4, fontFamily:"'DM Sans',sans-serif" }}>{sub}</div>}
-    </div>
-  );
-}
-
-function IntensityPicker({ value, onChange, T }) {
-  return (
-    <div style={{ marginBottom:4 }}>
-      <div style={{ fontSize:11, letterSpacing:"0.12em", textTransform:"uppercase", color:T.textFaint, marginBottom:10, fontWeight:600, fontFamily:"'DM Sans',sans-serif" }}>Intensity</div>
-      <div style={{ display:"flex", gap:8 }}>
-        {["light","moderate","hard"].map(lvl => (
-          <button key={lvl} onClick={() => onChange(lvl)} style={{
-            flex:1, padding:"10px 0", borderRadius:10, border:"none", cursor:"pointer",
-            fontWeight:600, fontSize:13, fontFamily:"'DM Sans',sans-serif", textTransform:"capitalize", transition:"all 0.15s",
-            background: value===lvl ? T.accent : T.bgSm,
-            color: value===lvl ? "#fff" : T.textMuted,
-          }}>{lvl}</button>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-// Global so RestTimerBar can read theme without prop drilling
-let effectiveDarkGlobal = false;
-
-const REST_PRESETS = [30, 60, 90, 120, 180, 240];
-
-function RestTimerBar({ T, remaining, restDuration, done, onSkip, onRestart }) {
+// Sub-components
+function RestBar({ T, remaining, duration, done, onSkip, onRestart }) {
   if (remaining === null) return null;
-
-  const pct = done ? 0 : remaining / restDuration;
-
+  const pct = done ? 0 : remaining / duration;
   return (
-    <div style={{
-      position:"fixed", bottom:66, left:"50%", transform:"translateX(-50%)",
-      width:"calc(100% - 24px)", maxWidth:456, zIndex:90,
-    }}>
-      <div style={{
-        background: T.bgModal,
-        border: `1px solid ${done ? T.dangerBorder : T.accentBorder}`,
-        borderRadius:16, padding:"12px 16px",
-        boxShadow: effectiveDarkGlobal ? "0 -4px 28px rgba(0,0,0,0.55)" : "0 -4px 20px rgba(0,0,0,0.13)",
-        transition:"border-color 0.3s",
-      }}>
-        <div style={{ height:3, background:T.bgSm, borderRadius:3, marginBottom:12, overflow:"hidden" }}>
-          <div style={{ height:"100%", width:`${pct*100}%`, background:done?T.danger:T.accent, borderRadius:3, transition:"width 1s linear, background 0.3s" }} />
+    <div style={{position:"fixed",bottom:66,left:"50%",transform:"translateX(-50%)",width:"calc(100% - 24px)",maxWidth:456,zIndex:90}}>
+      <div style={{background:T.bgModal,border:"1px solid "+(done?T.dangerBorder:T.accentBorder),borderRadius:16,padding:"12px 16px",boxShadow:"0 -4px 24px rgba(0,0,0,0.4)"}}>
+        <div style={{height:3,background:T.bgSm,borderRadius:3,marginBottom:12,overflow:"hidden"}}>
+          <div style={{height:"100%",width:(pct*100)+"%",background:done?T.danger:T.accent,borderRadius:3,transition:"width 1s linear"}}/>
         </div>
-        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
           <div>
-            {done ? (
-              <div style={{ fontSize:15, fontWeight:700, color:T.danger, fontFamily:"'DM Sans',sans-serif" }}>Next set time! 💪</div>
-            ) : (
-              <div>
-                <div style={{ fontSize:10, color:T.textFaint, textTransform:"uppercase", letterSpacing:"0.1em", fontFamily:"'DM Sans',sans-serif", fontWeight:600, marginBottom:2 }}>Resting</div>
-                <div style={{ fontSize:26, fontWeight:700, fontFamily:"'DM Mono',monospace", color:T.accent, lineHeight:1 }}>
-                  {remaining >= 60
-                    ? `${Math.floor(remaining/60)}:${String(remaining%60).padStart(2,"0")}`
-                    : `${remaining}s`}
+            {done
+              ? <div style={{fontSize:15,fontWeight:700,color:T.danger,fontFamily:"'DM Sans',sans-serif"}}>Next set - go!</div>
+              : <div>
+                  <div style={{fontSize:10,color:T.textFaint,textTransform:"uppercase",letterSpacing:"0.1em",fontFamily:"'DM Sans',sans-serif",fontWeight:600,marginBottom:2}}>Resting</div>
+                  <div style={{fontSize:26,fontWeight:700,fontFamily:"'DM Mono',monospace",color:T.accent,lineHeight:1}}>
+                    {remaining>=60 ? Math.floor(remaining/60)+":"+(String(remaining%60).padStart(2,"0")) : remaining+"s"}
+                  </div>
                 </div>
-              </div>
-            )}
+            }
           </div>
-          <div style={{ display:"flex", gap:8 }}>
-            <button onClick={onRestart} style={{ padding:"8px 14px", borderRadius:10, border:`1px solid ${T.bgSmBorder}`, cursor:"pointer", fontSize:12, fontWeight:600, fontFamily:"'DM Sans',sans-serif", background:done?T.accent:T.bgSm, color:done?"#fff":T.textMuted }}>Restart</button>
-            <button onClick={onSkip}    style={{ padding:"8px 14px", borderRadius:10, border:`1px solid ${T.bgSmBorder}`, cursor:"pointer", fontSize:12, fontWeight:600, fontFamily:"'DM Sans',sans-serif", background:T.bgSm, color:T.textMuted }}>Skip</button>
+          <div style={{display:"flex",gap:8}}>
+            <button onClick={onRestart} style={{padding:"8px 14px",borderRadius:10,border:"1px solid "+T.bgSmBorder,cursor:"pointer",fontSize:12,fontWeight:600,fontFamily:"'DM Sans',sans-serif",background:done?T.accent:T.bgSm,color:done?"#fff":T.textMuted}}>Restart</button>
+            <button onClick={onSkip} style={{padding:"8px 14px",borderRadius:10,border:"1px solid "+T.bgSmBorder,cursor:"pointer",fontSize:12,fontWeight:600,fontFamily:"'DM Sans',sans-serif",background:T.bgSm,color:T.textMuted}}>Skip</button>
           </div>
         </div>
       </div>
@@ -232,1336 +145,1474 @@ function RestTimerBar({ T, remaining, restDuration, done, onSkip, onRestart }) {
   );
 }
 
-// ── Main ──────────────────────────────────────────────────────────────────────
-
-export default function App() {
+// Main App
+function AppInner({ user }) {
   // Theme
+  const [themePref, setThemePref] = useState("auto");
+  const [isDark, setIsDark] = useState(isDarkHour());
+  const dark = themePref === "auto" ? isDark : themePref === "dark";
+  const T = theme(dark);
 
-  const [themePref, setThemePref] = useState("auto"); // "auto" | "dark" | "light"
-  const [isDark, setIsDark]       = useState(shouldUseDark());
-
-  // Resolve effective dark/light based on pref + time
-  const effectiveDark = themePref === "auto" ? isDark : themePref === "dark";
-  const T = buildTheme(effectiveDark);
-
-  // Re-evaluate time-based theme every minute and on tab focus
   useEffect(() => {
-    const tick = () => setIsDark(shouldUseDark());
-    const interval = setInterval(tick, 60000);
-    window.addEventListener("focus", tick);
-    return () => { clearInterval(interval); window.removeEventListener("focus", tick); };
+    const t = setInterval(() => setIsDark(isDarkHour()), 60000);
+    const f = () => setIsDark(isDarkHour());
+    window.addEventListener("focus", f);
+    return () => { clearInterval(t); window.removeEventListener("focus", f); };
   }, []);
 
-  // Persist theme pref
-  useEffect(() => { try { localStorage.setItem(THEME_KEY, themePref); } catch {} }, [themePref]);
-  useEffect(() => {
-    try {
-      const saved = localStorage.getItem(THEME_KEY);
-      if (saved) setThemePref(saved);
-    } catch {}
-  }, []);
+  useEffect(() => { try { localStorage.setItem(TK, themePref); } catch(e) {} }, [themePref]);
 
-  // App state
-  const [workouts, setWorkouts]         = useState([]);
-  const [view, setView]                 = useState("dashboard");
-  const [logStep, setLogStep]           = useState("type");
-  const [workoutType, setWorkoutType]   = useState(null);
-  const [elapsed, setElapsed]           = useState(0);
+  // Nav
+  const [view, setView] = useState("home");
+
+  // Workout logging
+  const [logStep, setLogStep] = useState("type");
+  const [wType, setWType] = useState(null);
+  const [elapsed, setElapsed] = useState(0);
+  const [exercises, setExercises] = useState([]);
+  const [intensity, setIntensity] = useState("moderate");
+  const [cardioType, setCardioType] = useState(CARDIO_TYPES[0]);
+  const [cardioDist, setCardioDist] = useState("");
+  const [cardioDur, setCardioDur] = useState("");
+  const [cardioNotes, setCardioNotes] = useState("");
   const timerRef = useRef(null);
   const startRef = useRef(null);
 
-  
-  const [exercises, setExercises]           = useState([]);
-  const [customExercise, setCustomExercise] = useState("");
-  const [restInterval, setRestInterval]     = useState(90);
-  const [restRemaining, setRestRemaining]   = useState(null);
-  const [restDone, setRestDone]             = useState(false);
-  const restTimerRef                        = useRef(null);
+  // Rest timer
+  const [restSecs, setRestSecs] = useState(90);
+  const [restLeft, setRestLeft] = useState(null);
+  const [restDone, setRestDone] = useState(false);
+  const restRef = useRef(null);
+  const restStartRef = useRef(null);
+  const restDurRef = useRef(90);
 
-  function startRestTimer(secs) {
-    clearInterval(restTimerRef.current);
-    setRestDone(false);
-    setRestRemaining(secs);
-    restTimerRef.current = setInterval(() => {
-      setRestRemaining(r => {
-        if (r <= 1) {
-          clearInterval(restTimerRef.current);
-          setRestDone(true);
-          try { if (navigator.vibrate) navigator.vibrate([200, 100, 200]); } catch {}
-          try { if (typeof Notification !== "undefined" && Notification.permission === "granted") new Notification("LIFTR", { body:"Rest complete — time for your next set! 💪" }); } catch {}
-          return 0;
-        }
-        return r - 1;
-      });
-    }, 1000);
-  }
+  // Exercise search
+  const [customEx, setCustomEx] = useState([]);
+  const [exQuery, setExQuery] = useState("");
+  const [exOpen, setExOpen] = useState(false);
+  const [exFilter, setExFilter] = useState(null);
+  const searchInputRef = useRef(null);
 
-  function skipRestTimer() {
-    clearInterval(restTimerRef.current);
-    setRestRemaining(null);
-    setRestDone(false);
-  }
-  const [customExercises, setCustomExercises] = useState([]); // flat list of user-saved names
-  const [exSearchQuery, setExSearchQuery]   = useState("");
-  const [exDropdownOpen, setExDropdownOpen] = useState(false);
-  const [exMuscleFilter, setExMuscleFilter] = useState(null); // null = all
-  const searchRef = useRef(null);
+  // Workouts data
+  const [workouts, setWorkouts] = useState([]);
 
-  const [cardioType, setCardioType]         = useState(CARDIO_TYPES[0]);
-  const [cardioDistance, setCardioDistance] = useState("");
-  const [cardioDuration, setCardioDuration] = useState("");
-  const [cardioNotes, setCardioNotes]       = useState("");
-  const [intensity, setIntensity]           = useState("moderate");
+  // History
+  const [histTab, setHistTab] = useState("sessions");
+  const [histFilter, setHistFilter] = useState("all");
+  const [histEx, setHistEx] = useState("");
+  const [histExSearch, setHistExSearch] = useState("");
+  const [editW, setEditW] = useState(null);
+  const [delConfirm, setDelConfirm] = useState(null);
 
-  const [historyFilter, setHistoryFilter]     = useState("all");
-  const [historyView, setHistoryView]         = useState("sessions"); // sessions | exercises | muscles
-  const [historyExercise, setHistoryExercise] = useState("");
-  const [historyExSearch, setHistoryExSearch] = useState("");
-  const [editingWorkout, setEditingWorkout]   = useState(null);
-  const [deleteConfirmId, setDeleteConfirmId] = useState(null);
-
-  const [measurements, setMeasurements]       = useState([]);
-  const [measWeightDraft, setMeasWeightDraft] = useState("");
-  const [measDateDraft, setMeasDateDraft]     = useState(() => new Date().toISOString().slice(0,10));
-  const [measSaved, setMeasSaved]             = useState(false);
-  const [measView, setMeasView]               = useState("log");
-
+  // Body / measurements
+  const [measurements, setMeasurements] = useState([]);
+  const [measView, setMeasView] = useState("log");
+  const [measDate, setMeasDate] = useState(new Date().toISOString().slice(0,10));
+  const [measWeight, setMeasWeight] = useState("");
+  const [measSaved, setMeasSaved] = useState(false);
   const [manualWeight, setManualWeight] = useState("");
-  const [weightDraft, setWeightDraft]   = useState("");
-  const [weightSaved, setWeightSaved]   = useState(false);
+  const [weightDraft, setWeightDraft] = useState("");
+  const [weightSaved, setWeightSaved] = useState(false);
+  const [profile, setProfile] = useState({height:"",age:"",sex:"male"});
+  const [profileDraft, setProfileDraft] = useState({height:"",age:"",sex:"male"});
+  const [profileSaved, setProfileSaved] = useState(false);
+
+  // Nutrition
+  const [nutrition, setNutrition] = useState([]);
+  const [nutTargets, setNutTargets] = useState({calories:2500,protein:180,carbs:250,fat:80});
+  const [nutDay, setNutDay] = useState(0);
+  const [nutView, setNutView] = useState("day");
+  const [showSettings, setShowSettings] = useState(false);
+  const [foodQuery, setFoodQuery] = useState("");
+  const [foodResults, setFoodResults] = useState([]);
+  const [foodLoading, setFoodLoading] = useState(false);
+  const [foodErr, setFoodErr] = useState("");
+  const [selFood, setSelFood] = useState(null);
+  const [foodQty, setFoodQty] = useState("1");
+  const [foodSaved, setFoodSaved] = useState(false);
+  const [editTargets, setEditTargets] = useState(false);
+  const [targetDraft, setTargetDraft] = useState({calories:2500,protein:180,carbs:250,fat:80});
+  const NIX_ID  = (typeof localStorage !== "undefined" ? localStorage.getItem("liftr_nix_id")  : null) || "";
+  const NIX_KEY = (typeof localStorage !== "undefined" ? localStorage.getItem("liftr_nix_key") : null) || "";
+
+  const [syncing, setSyncing] = useState(false);
 
   useEffect(() => {
-    try {
-      const s = localStorage.getItem(STORAGE_KEY);
-      if (s) setWorkouts(JSON.parse(s));
-      const w = localStorage.getItem(WEIGHT_KEY);
-      if (w) { setManualWeight(w); setWeightDraft(w); }
-      const m = localStorage.getItem(MEASURES_KEY);
-      if (m) setMeasurements(JSON.parse(m));
-      const cx = localStorage.getItem(CUSTOM_EX_KEY);
-      if (cx) setCustomExercises(JSON.parse(cx));
-    } catch {}
-  }, []);
+    async function load() {
+      setSyncing(true);
+      try {
+        const {data:wd} = await supabase.from("workouts").select("data").eq("user_id",user.id).maybeSingle();
+        if (wd) setWorkouts(wd.data||[]);
+        const {data:md} = await supabase.from("measurements").select("data").eq("user_id",user.id).maybeSingle();
+        if (md) setMeasurements(md.data||[]);
+        const {data:nd} = await supabase.from("nutrition").select("data").eq("user_id",user.id).maybeSingle();
+        if (nd) setNutrition(nd.data||[]);
+        const {data:sd} = await supabase.from("user_settings").select("data").eq("user_id",user.id).maybeSingle();
+        if (sd&&sd.data) {
+          const s=sd.data;
+          if(s.themePref) setThemePref(s.themePref);
+          if(s.customEx) setCustomEx(s.customEx);
+          if(s.profile){setProfile(s.profile);setProfileDraft(s.profile);}
+          if(s.nutTargets){setNutTargets(s.nutTargets);setTargetDraft(s.nutTargets);}
+          if(s.manualWeight){setManualWeight(s.manualWeight);setWeightDraft(s.manualWeight);}
+        }
+      } catch(e){console.error(e);}
+      setSyncing(false);
+    }
+    load();
+  }, [user.id]);
 
-  useEffect(() => { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(workouts)); } catch {} }, [workouts]);
-  useEffect(() => { try { localStorage.setItem(MEASURES_KEY, JSON.stringify(measurements)); } catch {} }, [measurements]);
-  useEffect(() => { try { localStorage.setItem(CUSTOM_EX_KEY, JSON.stringify(customExercises)); } catch {} }, [customExercises]);
+  const upsert = useCallback(async (table, data) => {
+    await supabase.from(table).upsert({user_id:user.id, data}, {onConflict:"user_id"});
+  }, [user.id]);
 
-  const effectiveWeight = measurements.length > 0
-    ? String(measurements[measurements.length-1].weight)
-    : manualWeight;
+  useEffect(() => { upsert("workouts", workouts); }, [workouts]);
+  useEffect(() => { upsert("measurements", measurements); }, [measurements]);
+  useEffect(() => { upsert("nutrition", nutrition); }, [nutrition]);
+  useEffect(() => { upsert("user_settings", {themePref,customEx,profile,nutTargets,manualWeight}); }, [themePref,customEx,profile,nutTargets,manualWeight]);
 
+  // Workout timer (wall-clock so it survives screen lock)
   useEffect(() => {
     if (logStep === "details") {
-      startRef.current = Date.now() - elapsed * 1000;
-      timerRef.current = setInterval(() => setElapsed(Math.floor((Date.now() - startRef.current) / 1000)), 1000);
+      if (!startRef.current) startRef.current = Date.now() - elapsed * 1000;
+      timerRef.current = setInterval(() => setElapsed(Math.floor((Date.now()-startRef.current)/1000)), 1000);
+      const sync = () => setElapsed(Math.floor((Date.now()-startRef.current)/1000));
+      document.addEventListener("visibilitychange", sync);
+      window.addEventListener("focus", sync);
+      return () => {
+        clearInterval(timerRef.current);
+        document.removeEventListener("visibilitychange", sync);
+        window.removeEventListener("focus", sync);
+      };
     }
     return () => clearInterval(timerRef.current);
   }, [logStep]);
 
+  // Rest timer helpers
+  function startRest(secs) {
+    clearInterval(restRef.current);
+    if (restRef._cleanup) restRef._cleanup();
+    const s = secs || restSecs;
+    restStartRef.current = Date.now();
+    restDurRef.current = s;
+    setRestDone(false);
+    setRestLeft(s);
+    const tick = () => {
+      const gone = Math.floor((Date.now()-restStartRef.current)/1000);
+      const left = Math.max(0, restDurRef.current - gone);
+      setRestLeft(left);
+      if (left <= 0) {
+        clearInterval(restRef.current);
+        setRestDone(true);
+        try { if (navigator.vibrate) navigator.vibrate([200,100,200]); } catch(e) {}
+      }
+    };
+    restRef.current = setInterval(tick, 1000);
+    const vis = () => tick();
+    document.addEventListener("visibilitychange", vis);
+    window.addEventListener("focus", vis);
+    restRef._cleanup = () => {
+      document.removeEventListener("visibilitychange", vis);
+      window.removeEventListener("focus", vis);
+    };
+  }
+  function skipRest() {
+    clearInterval(restRef.current);
+    if (restRef._cleanup) restRef._cleanup();
+    setRestLeft(null); setRestDone(false);
+  }
+
+  // Workout helpers
   function startWorkout(type) {
-    setWorkoutType(type); setElapsed(0); setExercises([]);
-    setCardioType(CARDIO_TYPES[0]);
-    setCardioDistance(""); setCardioDuration(""); setCardioNotes("");
-    setIntensity("moderate");
-    setExSearchQuery(""); setExDropdownOpen(false); setExMuscleFilter(null);
-    // Request notification permission for rest timer alerts (best-effort)
-    try { if (typeof Notification !== "undefined" && Notification.permission === "default") Notification.requestPermission(); } catch {}
+    setWType(type); setElapsed(0); setExercises([]);
+    setCardioType(CARDIO_TYPES[0]); setCardioDist(""); setCardioDur(""); setCardioNotes("");
+    setIntensity("moderate"); setExQuery(""); setExOpen(false); setExFilter(null);
+    startRef.current = Date.now();
     setLogStep("details");
   }
   function resetLog() {
-    clearInterval(timerRef.current);
-    clearInterval(restTimerRef.current);
-    setRestRemaining(null); setRestDone(false);
-    setLogStep("type"); setView("dashboard"); setElapsed(0);
+    clearInterval(timerRef.current); skipRest();
+    startRef.current = null;
+    setLogStep("type"); setElapsed(0);
   }
-
-  // Derive muscle groups hit from the exercise list, preserving order of first appearance
-  function detectMuscleGroups(exList) {
-    const seen = [];
-    exList.forEach(e => {
-      const g = EXERCISE_MUSCLE_MAP[e.name];
-      if (g && !seen.includes(g)) seen.push(g);
-    });
-    return seen; // e.g. ["Chest","Triceps"]
+  function addSet(ei)          { setExercises(p => p.map((e,i) => i===ei ? {...e,sets:[...e.sets,{weight:"",reps:""}]} : e)); }
+  function removeSet(ei,si)    { setExercises(p => p.map((e,i) => i===ei ? {...e,sets:e.sets.filter((_,j)=>j!==si)} : e)); }
+  function updSet(ei,si,f,v)   { setExercises(p => p.map((e,i) => i===ei ? {...e,sets:e.sets.map((s,j)=>j===si?{...s,[f]:v}:s)} : e)); }
+  function removeEx(idx)       { setExercises(p => p.filter((_,i)=>i!==idx)); }
+  function addEx(name)         { if (!exercises.some(e=>e.name===name)) setExercises(p=>[...p,{name,sets:[{weight:"",reps:""}]}]); }
+  function saveCustomEx(name)  {
+    const t = name.trim(); if (!t) return;
+    const all = DEFAULT_EX.map(e=>e.toLowerCase());
+    if (!all.includes(t.toLowerCase()) && !customEx.map(e=>e.toLowerCase()).includes(t.toLowerCase()))
+      setCustomEx(p=>[...p,t].sort());
   }
+  function delCustomEx(name)   { setCustomEx(p=>p.filter(e=>e!==name)); }
 
-  function muscleGroupLabel(exList) {
-    const groups = detectMuscleGroups(exList);
-    if (groups.length === 0) return "Strength";
-    if (groups.length <= 3) return groups.join(" + ");
-    return groups.slice(0, 2).join(" + ") + ` +${groups.length - 2}`;
-  }
-
-  // Auto-detect intensity from exercises, sets, and rest interval
-  function detectIntensity(exList, restSecs) {
-    const HEAVY_COMPOUNDS = ["Squat","Deadlift","Clean","Snatch","Thruster","Barbell Row","Overhead Press","Bench Press","Romanian Deadlift","Leg Press"];
-    let score = 0; // 0–10 scale → light <4, moderate 4–7, hard >7
-
-    // 1. Heavy compound presence
-    const hasCompound = exList.some(e => HEAVY_COMPOUNDS.includes(e.name));
-    if (hasCompound) score += 3;
-
-    // 2. Average sets per exercise
-    const totalSets = exList.reduce((s, e) => s + e.sets.filter(st => st.weight || st.reps).length, 0);
-    const avgSets = exList.length > 0 ? totalSets / exList.length : 0;
-    if (avgSets >= 4) score += 2;
-    else if (avgSets >= 3) score += 1;
-
-    // 3. Rest interval — shorter rest = higher intensity
-    if (restSecs <= 60)  score += 3;
-    else if (restSecs <= 90)  score += 2;
-    else if (restSecs <= 120) score += 1;
-    // 180+ adds nothing
-
-    // 4. Exercise variety — more muscle groups hit = fuller session
-    const groups = detectMuscleGroups(exList);
-    if (groups.length >= 3) score += 1;
-
-    if (score >= 7) return "hard";
-    if (score >= 4) return "moderate";
-    return "light";
-  }
-
-  function addExercise(name) {
-    if (exercises.some(e => e.name === name)) return;
-    setExercises(p => [...p, { name, sets:[{ weight:"", reps:"" }] }]);
-  }
-
-  function saveCustomExercise(name) {
-    const trimmed = name.trim();
-    if (!trimmed) return;
-    // Save if not already in defaults or customs
-    const allDefaults = DEFAULT_EXERCISES.map(e => e.toLowerCase());
-    if (!allDefaults.includes(trimmed.toLowerCase()) && !customExercises.map(e=>e.toLowerCase()).includes(trimmed.toLowerCase())) {
-      setCustomExercises(prev => [...prev, trimmed].sort());
-    }
-  }
-
-  function deleteCustomExercise(name) {
-    setCustomExercises(prev => prev.filter(e => e !== name));
-  }
-
-  // All exercises = defaults + customs, deduped and sorted
-  const allExercises = [...new Set([...DEFAULT_EXERCISES, ...customExercises])].sort();
-
-  // Filtered dropdown list — apply muscle group filter then text search
-  const exDropdownItems = allExercises.filter(e => {
-    const muscleMatch = !exMuscleFilter || (EXERCISE_MUSCLE_MAP[e] === exMuscleFilter) || customExercises.includes(e);
-    const textMatch = exSearchQuery.trim() === "" || e.toLowerCase().includes(exSearchQuery.toLowerCase());
-    return muscleMatch && textMatch;
+  const allEx = [...new Set([...DEFAULT_EX,...customEx])].sort();
+  const exItems = allEx.filter(e => {
+    const mg = !exFilter || EX_MAP[e]===exFilter || customEx.includes(e);
+    const tx = !exQuery.trim() || e.toLowerCase().includes(exQuery.toLowerCase());
+    return mg && tx;
   });
+  function pickEx(name) { addEx(name); setExQuery(""); setExOpen(false); }
+  function addNewEx()   { const t=exQuery.trim(); if(!t) return; saveCustomEx(t); addEx(t); setExQuery(""); setExOpen(false); }
 
-  function handleExerciseSelect(name) {
-    addExercise(name);
-    setExSearchQuery("");
-    setExDropdownOpen(false);
+  function getMuscleGroups(exList) {
+    const seen = [];
+    exList.forEach(e => { const g=EX_MAP[e.name]; if(g&&!seen.includes(g)) seen.push(g); });
+    return seen;
   }
-
-  function handleExerciseAdd() {
-    const trimmed = exSearchQuery.trim();
-    if (!trimmed) return;
-    saveCustomExercise(trimmed);
-    addExercise(trimmed);
-    setExSearchQuery("");
-    setExDropdownOpen(false);
+  function mgLabel(exList) {
+    const g = getMuscleGroups(exList);
+    if (!g.length) return "Strength";
+    if (g.length <= 3) return g.join(" + ");
+    return g.slice(0,2).join(" + ")+" +"+(g.length-2);
   }
-  function addSet(ei)           { setExercises(p => p.map((e,i) => i===ei ? { ...e, sets:[...e.sets,{ weight:"", reps:"" }] } : e)); }
-  function removeSet(ei,si)     { setExercises(p => p.map((e,i) => i===ei ? { ...e, sets:e.sets.filter((_,j)=>j!==si) } : e)); }
-  function updateSet(ei,si,f,v) { setExercises(p => p.map((e,i) => i===ei ? { ...e, sets:e.sets.map((s,j)=>j===si?{...s,[f]:v}:s) } : e)); }
-  function removeExercise(idx)  { setExercises(p => p.filter((_,i) => i!==idx)); }
+  function autoIntensity(exList, restSec) {
+    const HEAVY = ["Squat","Deadlift","Clean","Snatch","Thruster","Barbell Row","Overhead Press","Bench Press","Romanian Deadlift","Leg Press"];
+    let s = 0;
+    if (exList.some(e=>HEAVY.includes(e.name))) s += 3;
+    const tot = exList.reduce((a,e)=>a+e.sets.filter(st=>st.weight||st.reps).length,0);
+    const avg = exList.length ? tot/exList.length : 0;
+    if (avg>=4) s+=2; else if (avg>=3) s+=1;
+    if (restSec<=60) s+=3; else if (restSec<=90) s+=2; else if (restSec<=120) s+=1;
+    if (getMuscleGroups(exList).length>=3) s+=1;
+    return s>=7?"hard":s>=4?"moderate":"light";
+  }
 
   function finishWorkout() {
     clearInterval(timerRef.current);
-    const dur = Math.max(1, Math.round(elapsed/60));
+    const dur = Math.max(1,Math.round(elapsed/60));
+    const wt  = effectiveWeight;
     let w;
-    if (workoutType === "strength") {
-      const finishedExercises = exercises.map(e=>({ name:e.name, sets:e.sets.filter(s=>s.weight||s.reps) })).filter(e=>e.sets.length);
-      const autoIntensity = detectIntensity(finishedExercises, restInterval);
-      w = { id:Date.now(), type:"strength", date:new Date().toISOString(), duration:dur,
-            muscleGroups: detectMuscleGroups(finishedExercises),
-            intensity: autoIntensity,
-            calories: calcCalorieRange("strength", null, autoIntensity, dur, effectiveWeight),
-            exercises: finishedExercises };
+    if (wType === "strength") {
+      const fin = exercises.map(e=>({name:e.name,sets:e.sets.filter(s=>s.weight||s.reps)})).filter(e=>e.sets.length);
+      const auto = autoIntensity(fin, restSecs);
+      w = {id:Date.now(),type:"strength",date:new Date().toISOString(),duration:dur,
+           muscleGroups:getMuscleGroups(fin),intensity:auto,
+           calories:calcCals("strength",null,auto,dur,wt),exercises:fin};
     } else {
-      const d = parseInt(cardioDuration)||dur;
-      w = { id:Date.now(), type:"cardio", date:new Date().toISOString(), duration:d, cardioType, intensity,
-            calories: calcCalorieRange("cardio", cardioType, intensity, d, effectiveWeight),
-            distance: parseFloat(cardioDistance)||null, notes:cardioNotes };
+      const d = parseInt(cardioDur)||dur;
+      w = {id:Date.now(),type:"cardio",date:new Date().toISOString(),duration:d,
+           cardioType,intensity,calories:calcCals("cardio",cardioType,intensity,d,wt),
+           distance:parseFloat(cardioDist)||null,notes:cardioNotes};
     }
-    setWorkouts(p => [w,...p]);
+    setWorkouts(p=>[w,...p]);
     setLogStep("complete");
   }
 
-  function getPriorSessions(name) {
-    return workouts
-      .filter(w => w.type==="strength" && w.exercises?.some(e=>e.name===name))
-      .slice(0,2)
-      .map(w => {
-        const ex = w.exercises.find(e=>e.name===name);
-        const valid = ex.sets.filter(s=>parseFloat(s.weight)>0 && parseFloat(s.reps)>0);
-        if (!valid.length) return null;
-        return { date:w.date, setCount:valid.length,
-          avgWeight: Math.round(valid.reduce((s,x)=>s+parseFloat(x.weight),0)/valid.length),
-          avgReps:   Math.round(valid.reduce((s,x)=>s+parseFloat(x.reps),0)/valid.length) };
+  function priorSessions(name) {
+    return workouts.filter(w=>w.type==="strength"&&w.exercises?.some(e=>e.name===name))
+      .slice(0,2).map(w=>{
+        const ex=w.exercises.find(e=>e.name===name);
+        const v=ex.sets.filter(s=>parseFloat(s.weight)>0&&parseFloat(s.reps)>0);
+        if (!v.length) return null;
+        return {date:w.date,setCount:v.length,
+          avgWeight:Math.round(v.reduce((a,s)=>a+parseFloat(s.weight),0)/v.length),
+          avgReps:Math.round(v.reduce((a,s)=>a+parseFloat(s.reps),0)/v.length)};
       }).filter(Boolean);
   }
 
-  function saveEdit() { setWorkouts(p=>p.map(w=>w.id===editingWorkout.id?editingWorkout:w)); setEditingWorkout(null); }
-  function updateEditSet(ei,si,f,v) { setEditingWorkout(p=>({ ...p, exercises:p.exercises.map((e,i)=>i===ei?{ ...e, sets:e.sets.map((s,j)=>j===si?{...s,[f]:v}:s) }:e) })); }
-  function addEditSet(ei)           { setEditingWorkout(p=>({ ...p, exercises:p.exercises.map((e,i)=>i===ei?{ ...e, sets:[...e.sets,{ weight:"", reps:"" }] }:e) })); }
-  function removeEditSet(ei,si)     { setEditingWorkout(p=>({ ...p, exercises:p.exercises.map((e,i)=>i===ei?{ ...e, sets:e.sets.filter((_,j)=>j!==si) }:e) })); }
+  // Edit helpers
+  function saveEdit() { setWorkouts(p=>p.map(w=>w.id===editW.id?editW:w)); setEditW(null); }
+  function updEditSet(ei,si,f,v) { setEditW(p=>({...p,exercises:p.exercises.map((e,i)=>i===ei?{...e,sets:e.sets.map((s,j)=>j===si?{...s,[f]:v}:s)}:e)})); }
+  function addEditSet(ei)        { setEditW(p=>({...p,exercises:p.exercises.map((e,i)=>i===ei?{...e,sets:[...e.sets,{weight:"",reps:""}]}:e)})); }
+  function remEditSet(ei,si)     { setEditW(p=>({...p,exercises:p.exercises.map((e,i)=>i===ei?{...e,sets:e.sets.filter((_,j)=>j!==si)}:e)})); }
 
-  function saveManualWeight() {
-    const val = weightDraft.trim();
-    setManualWeight(val);
-    try { localStorage.setItem(WEIGHT_KEY, val); } catch {}
-    setWeightSaved(true);
-    setTimeout(() => setWeightSaved(false), 2000);
+  // Body helpers
+  function saveMeas() {
+    const w = parseFloat(measWeight);
+    if (!w||!measDate) return;
+    setMeasurements(p=>[...p,{id:Date.now(),date:new Date(measDate).toISOString(),weight:w}].sort((a,b)=>new Date(a.date)-new Date(b.date)));
+    setMeasWeight(""); setMeasSaved(true); setTimeout(()=>setMeasSaved(false),1800);
+  }
+  function delMeas(id) { setMeasurements(p=>p.filter(m=>m.id!==id)); }
+  function saveManW()  {
+    const v=weightDraft.trim(); setManualWeight(v);
+    try { localStorage.setItem("liftr_weight",v); } catch(e) {}
+    setWeightSaved(true); setTimeout(()=>setWeightSaved(false),2000);
+  }
+  function saveProfile() {
+    setProfile(profileDraft);
+    try { localStorage.setItem("liftr_profile",JSON.stringify(profileDraft)); } catch(e) {}
+    setProfileSaved(true); setTimeout(()=>setProfileSaved(false),2000);
   }
 
-  function addMeasurement() {
-    const w = parseFloat(measWeightDraft);
-    if (!w || !measDateDraft) return;
-    const entry = { id:Date.now(), date:new Date(measDateDraft).toISOString(), weight:w };
-    setMeasurements(p => [...p, entry].sort((a,b)=>new Date(a.date)-new Date(b.date)));
-    setMeasWeightDraft("");
-    setMeasSaved(true);
-    setTimeout(() => setMeasSaved(false), 1800);
+  // Nutrition helpers
+  async function searchFood(q) {
+    if (!q.trim()) return;
+    setFoodLoading(true); setFoodErr(""); setFoodResults([]);
+    try {
+      const r = await fetch("https://trackapi.nutritionix.com/v2/search/instant?query="+encodeURIComponent(q),{headers:{"x-app-id":NIX_ID,"x-app-key":NIX_KEY}});
+      if (!r.ok) throw new Error("fail");
+      const d = await r.json();
+      setFoodResults([
+        ...(d.branded||[]).slice(0,5).map(f=>({name:f.food_name,brand:f.brand_name,calories:f.nf_calories,protein:f.nf_protein,carbs:f.nf_total_carbohydrate,fat:f.nf_total_fat,serving:f.serving_unit,qty:f.serving_qty})),
+        ...(d.common||[]).slice(0,5).map(f=>({name:f.food_name,brand:"Common",calories:null,protein:null,carbs:null,fat:null,serving:"serving",qty:1})),
+      ]);
+    } catch(e) { setFoodErr("Search failed. Add API keys in Body > Settings."); }
+    setFoodLoading(false);
   }
-  function deleteMeasurement(id) { setMeasurements(p=>p.filter(m=>m.id!==id)); }
+  async function pickFood(food) {
+    if (food.calories !== null) { setSelFood(food); setFoodQty("1"); return; }
+    setFoodLoading(true);
+    try {
+      const r = await fetch("https://trackapi.nutritionix.com/v2/natural/nutrients",{method:"POST",headers:{"x-app-id":NIX_ID,"x-app-key":NIX_KEY,"Content-Type":"application/json"},body:JSON.stringify({query:food.name})});
+      const d = await r.json();
+      const f = d.foods?.[0];
+      if (f) setSelFood({name:f.food_name,brand:"Common",calories:Math.round(f.nf_calories),protein:Math.round(f.nf_protein||0),carbs:Math.round(f.nf_total_carbohydrate||0),fat:Math.round(f.nf_total_fat||0),serving:f.serving_unit,qty:f.serving_qty});
+    } catch(e) {}
+    setFoodLoading(false); setFoodQty("1");
+  }
+  function logFood() {
+    if (!selFood) return;
+    const m = parseFloat(foodQty)||1;
+    const d = new Date(); d.setDate(d.getDate()-nutDay);
+    setNutrition(p=>[{id:Date.now(),date:d.toISOString(),name:selFood.name,brand:selFood.brand,
+      calories:Math.round((selFood.calories||0)*m),protein:Math.round((selFood.protein||0)*m),
+      carbs:Math.round((selFood.carbs||0)*m),fat:Math.round((selFood.fat||0)*m),
+      serving:selFood.serving,qty:m},...p]);
+    setSelFood(null); setFoodQuery(""); setFoodResults([]); setFoodQty("1");
+    setFoodSaved(true); setTimeout(()=>setFoodSaved(false),1800);
+    setNutView("day");
+  }
+  function delFood(id) { setNutrition(p=>p.filter(e=>e.id!==id)); }
 
-  // ── Derived stats ─────────────────────────────────────────────────────────
-  const strengthWorkouts = workouts.filter(w=>w.type==="strength");
-  const cardioWorkouts   = workouts.filter(w=>w.type==="cardio");
-  const totalMins        = workouts.reduce((s,w)=>s+(w.duration||0),0);
-  const filteredHistory  = historyFilter==="all" ? workouts : workouts.filter(w=>w.type===historyFilter);
-  const timerDisplay     = `${String(Math.floor(elapsed/60)).padStart(2,"0")}:${String(elapsed%60).padStart(2,"0")}`;
-  const now              = Date.now();
+  // Derived
+  const now = Date.now();
+  const strengthW = workouts.filter(w=>w.type==="strength");
+  const effectiveWeight = measurements.length ? String(measurements[measurements.length-1].weight) : manualWeight;
+  const currentWeight   = measurements.length ? measurements[measurements.length-1].weight : parseFloat(manualWeight)||null;
+  const bmr = calcBMR(currentWeight, profile.height, profile.age, profile.sex);
 
-  // 7-day strip — each day gets a volume score for bar height
-  // Strength: total reps across all sets  |  Cardio: duration minutes (scaled ×3 to be comparable)
-  const last7Days = Array.from({ length: 7 }, (_, i) => {
-    const d = new Date();
-    d.setDate(d.getDate() - (6 - i));
-    const dateStr = d.toDateString();
-    const dayWorkouts = workouts.filter(w => new Date(w.date).toDateString() === dateStr);
-    const strengthVol = dayWorkouts.filter(w=>w.type==="strength")
-      .reduce((s,w)=>(w.exercises||[]).reduce((ss,e)=>ss+e.sets.reduce((sss,st)=>sss+(parseFloat(st.reps)||0),0),s),0);
-    const cardioMins  = dayWorkouts.filter(w=>w.type==="cardio").reduce((s,w)=>s+(w.duration||0),0);
-    const totalVol    = strengthVol + cardioMins * 3; // normalise cardio mins to rep-scale
-    const hasStrength = dayWorkouts.some(w=>w.type==="strength");
-    const hasCardio   = dayWorkouts.some(w=>w.type==="cardio");
-    const sessions    = dayWorkouts.length;
-    return { date:d, label:d.toLocaleDateString("en-US",{weekday:"short"}).slice(0,1), totalVol, hasStrength, hasCardio, sessions, dayWorkouts };
+  // 7-day activity
+  const days7 = Array.from({length:7},(_,i)=>{
+    const d=new Date(); d.setDate(d.getDate()-(6-i));
+    const ds=d.toDateString();
+    const dw=workouts.filter(w=>new Date(w.date).toDateString()===ds);
+    const sv=dw.filter(w=>w.type==="strength").reduce((a,w)=>(w.exercises||[]).reduce((b,e)=>b+e.sets.reduce((c,s)=>c+(parseFloat(s.reps)||0),0),a),0);
+    const cm=dw.filter(w=>w.type==="cardio").reduce((a,w)=>a+(w.duration||0),0);
+    return {date:d,label:d.toLocaleDateString("en-US",{weekday:"short"}).slice(0,1),
+            vol:sv+cm*3,hasS:dw.some(w=>w.type==="strength"),hasC:dw.some(w=>w.type==="cardio"),
+            count:dw.length,sessions:dw};
   });
-  const maxDayVol = Math.max(...last7Days.map(d=>d.totalVol), 1);
+  const maxVol = Math.max(...days7.map(d=>d.vol),1);
+  const today  = days7[6];
+  const todayMins  = today.sessions.reduce((a,w)=>a+(w.duration||0),0);
+  const todayCals  = today.sessions.reduce((a,w)=>a+(w.calories?.low||0),0);
+  const todayCalsH = today.sessions.reduce((a,w)=>a+(w.calories?.high||0),0);
 
-  // Today summary
-  const todayData = last7Days[6];
-  const todayMins = todayData.dayWorkouts.reduce((s,w)=>s+(w.duration||0),0);
-  const todayCals = todayData.dayWorkouts.reduce((s,w)=>s+(w.calories?.low||0),0);
-  const todayCalsHigh = todayData.dayWorkouts.reduce((s,w)=>s+(w.calories?.high||0),0);
+  // Week stats
+  const weekSets  = workouts.filter(w=>(now-new Date(w.date))/86400000<=7&&w.type==="strength").reduce((a,w)=>a+(w.exercises||[]).reduce((b,e)=>b+e.sets.length,0),0);
+  const lastWSets = workouts.filter(w=>{const d=(now-new Date(w.date))/86400000;return d>7&&d<=14&&w.type==="strength";}).reduce((a,w)=>a+(w.exercises||[]).reduce((b,e)=>b+e.sets.length,0),0);
+  const volChg    = lastWSets>0?Math.round(((weekSets-lastWSets)/lastWSets)*100):null;
+  const weekMins  = workouts.filter(w=>(now-new Date(w.date))/86400000<=7).reduce((a,w)=>a+(w.duration||0),0);
+  const weekCount = workouts.filter(w=>(now-new Date(w.date))/86400000<=7).length;
 
-  // This week vs last week
-  const thisWeekSets = workouts.filter(w=>(now-new Date(w.date))/86400000<=7 && w.type==="strength")
-    .reduce((s,w)=>s+(w.exercises||[]).reduce((ss,e)=>ss+e.sets.length,0),0);
-  const lastWeekSets = workouts.filter(w=>{ const d=(now-new Date(w.date))/86400000; return d>7&&d<=14&&w.type==="strength"; })
-    .reduce((s,w)=>s+(w.exercises||[]).reduce((ss,e)=>ss+e.sets.length,0),0);
-  const volumeChange = lastWeekSets > 0 ? Math.round(((thisWeekSets-lastWeekSets)/lastWeekSets)*100) : null;
-
-  const thisWeekMins = workouts.filter(w=>(now-new Date(w.date))/86400000<=7).reduce((s,w)=>s+(w.duration||0),0);
-  const thisWeekSessions = workouts.filter(w=>(now-new Date(w.date))/86400000<=7).length;
-
-  // Personal records — within last 7 days
-  const recentPRs = (() => {
-    const prs = [];
-    const allExNames = [...new Set(strengthWorkouts.flatMap(w=>(w.exercises||[]).map(e=>e.name)))];
-    allExNames.forEach(name => {
-      const sessions = strengthWorkouts.filter(w=>w.exercises?.some(e=>e.name===name)).sort((a,b)=>new Date(b.date)-new Date(a.date));
-      if (sessions.length < 2) return;
-      const latest = sessions[0];
-      const latestEx = latest.exercises.find(e=>e.name===name);
-      const latestMax = Math.max(...latestEx.sets.map(s=>parseFloat(s.weight)||0));
-      const prevMax = Math.max(...sessions.slice(1).flatMap(w=>w.exercises.find(e=>e.name===name)?.sets.map(s=>parseFloat(s.weight)||0)||[0]));
-      const daysAgo = (now-new Date(latest.date))/86400000;
-      if (latestMax > prevMax && daysAgo <= 7 && latestMax > 0) prs.push({ name, weight:latestMax });
+  // PRs this week
+  const weekPRs = (() => {
+    const prs=[];
+    const names=[...new Set(strengthW.flatMap(w=>(w.exercises||[]).map(e=>e.name)))];
+    names.forEach(name=>{
+      const ss=strengthW.filter(w=>w.exercises?.some(e=>e.name===name)).sort((a,b)=>new Date(b.date)-new Date(a.date));
+      if (ss.length<2) return;
+      const lx=ss[0].exercises.find(e=>e.name===name);
+      const lm=Math.max(...lx.sets.map(s=>parseFloat(s.weight)||0));
+      const pm=Math.max(...ss.slice(1).flatMap(w=>w.exercises.find(e=>e.name===name)?.sets.map(s=>parseFloat(s.weight)||0)||[0]));
+      if (lm>pm&&(now-new Date(ss[0].date))/86400000<=7&&lm>0) prs.push({name,weight:lm});
     });
     return prs.slice(0,3);
   })();
 
-  // Status line — no streak, activity-focused
+  // Status line
   const statusLine = (() => {
-    if (!workouts.length) return { text:"Log your first workout to get started", emoji:"👟" };
-    const daysAgo = (now-new Date(workouts[0].date))/86400000;
-    if (todayData.sessions >= 2) return { text:`${todayData.sessions} sessions today — serious work`, emoji:"⚡" };
-    if (todayData.sessions === 1) return { text:"One session in — ready for more?", emoji:"💪" };
-    if (daysAgo < 2) return { text:"Yesterday's work is paying off", emoji:"🏆" };
-    if (daysAgo < 4) return { text:"Ready to train? Let's go", emoji:"🎯" };
-    return { text:"Time to get back at it", emoji:"💡" };
+    if (!workouts.length) return "Log your first workout";
+    const da=(now-new Date(workouts[0].date))/86400000;
+    if (today.count>=2) return today.count+" sessions today - great work";
+    if (today.count===1) return "One session in - ready for more?";
+    if (da<2) return "Yesterday's work is paying off";
+    if (da<4) return "Ready to train? Let's go";
+    return "Time to get back at it";
   })();
 
-  // Mini sparkline for body weight
-  const recentMeasurements = measurements.slice(-8);
-  const sparkMin   = recentMeasurements.length ? Math.min(...recentMeasurements.map(m=>m.weight)) : 0;
-  const sparkMax   = recentMeasurements.length ? Math.max(...recentMeasurements.map(m=>m.weight)) : 0;
-  const sparkRange = sparkMax - sparkMin || 1;
-  const sparkW=80, sparkH=28;
-  const sparkPts = recentMeasurements.map((m,i)=>({
-    x: recentMeasurements.length===1 ? sparkW/2 : (i/(recentMeasurements.length-1))*sparkW,
-    y: sparkH - ((m.weight-sparkMin)/sparkRange)*(sparkH-4) - 2,
-  }));
-  const sparkPath = sparkPts.map((p,i)=>`${i===0?"M":"L"} ${p.x} ${p.y}`).join(" ");
+  // Energy balance 7 days
+  const bal7 = Array.from({length:7},(_,i)=>{
+    const d=new Date(); d.setDate(d.getDate()-(6-i));
+    const ds=d.toDateString();
+    const eaten=nutrition.filter(e=>new Date(e.date).toDateString()===ds).reduce((a,e)=>a+(e.calories||0),0);
+    const burned=bmr?bmr+workouts.filter(w=>new Date(w.date).toDateString()===ds).reduce((a,w)=>a+(w.calories?.low||0),0):0;
+    return {label:d.toLocaleDateString("en-US",{weekday:"short"}).slice(0,1),isToday:i===6,
+            net:eaten>0?eaten-burned:null,eaten,burned};
+  });
+  const maxBal=Math.max(...bal7.map(d=>Math.abs(d.net||0)),1);
+  const todayBal=bal7[6];
 
-  // Measurements chart
-  const measMin   = measurements.length ? Math.min(...measurements.map(m=>m.weight)) : 0;
-  const measMax   = measurements.length ? Math.max(...measurements.map(m=>m.weight)) : 0;
-  const measRange = measMax - measMin || 1;
-  const measW=300, measH=120;
-  const measPts = measurements.map((m,i) => ({
-    x: measurements.length===1 ? measW/2 : (i/(measurements.length-1))*measW,
-    y: measH - ((m.weight-measMin)/measRange)*(measH-20) - 10, ...m,
-  }));
-  const measPath = measPts.map((p,i)=>`${i===0?"M":"L"} ${p.x} ${p.y}`).join(" ");
+  // Nutrition by selected day
+  const nutDateStr = (() => { const d=new Date(); d.setDate(d.getDate()-nutDay); return d.toDateString(); })();
+  const dayNut  = nutrition.filter(e=>new Date(e.date).toDateString()===nutDateStr);
+  const dayTots = dayNut.reduce((a,e)=>({calories:a.calories+(e.calories||0),protein:a.protein+(e.protein||0),carbs:a.carbs+(e.carbs||0),fat:a.fat+(e.fat||0)}),{calories:0,protein:0,carbs:0,fat:0});
+  const realTodayNut  = nutrition.filter(e=>new Date(e.date).toDateString()===new Date().toDateString());
+  const realTodayTots = realTodayNut.reduce((a,e)=>({calories:a.calories+(e.calories||0),protein:a.protein+(e.protein||0),carbs:a.carbs+(e.carbs||0),fat:a.fat+(e.fat||0)}),{calories:0,protein:0,carbs:0,fat:0});
 
-  const navItems = [
-    { id:"dashboard", icon:"⬡", label:"Home"    },
-    { id:"log",       icon:"＋", label:"Log"     },
-    { id:"history",   icon:"≡",  label:"History" },
-    { id:"body",      icon:"◉",  label:"Body"    },
-    { id:"settings",  icon:"◎",  label:"Settings"},
-  ];
-
-  // Style helpers
-  const btn = (v) => {
-    const base = { border:"none", cursor:"pointer", fontWeight:600, fontFamily:"'DM Sans',sans-serif", transition:"all 0.15s" };
-    if (v==="sm")        return { ...base, padding:"8px 14px",  borderRadius:20, fontSize:13, background:T.bgSm,        color:T.textBody,    border:`1px solid ${T.bgSmBorder}` };
-    if (v==="secondary") return { ...base, padding:"13px 24px", borderRadius:10, fontSize:15, background:T.bgSecondary, color:T.textBody,    border:`1px solid ${T.bgSecBorder}` };
-    if (v==="danger")    return { ...base, padding:"8px 12px",  borderRadius:8,  fontSize:13, background:T.dangerDim,   color:T.danger,      border:`1px solid ${T.dangerBorder}` };
-    if (v==="ghost")     return { ...base, padding:"7px 12px",  borderRadius:8,  fontSize:12, background:T.bgGhost,     color:T.textFaint,   border:`1px solid ${T.bgGhostBorder}` };
-    return { ...base, padding:"13px 24px", borderRadius:10, fontSize:15, background:T.accent, color:"#fff" };
+  // Week nutrition
+  const weekNut = nutrition.filter(e=>(now-new Date(e.date))/86400000<=7);
+  const weekNutTot = weekNut.reduce((a,e)=>({calories:a.calories+(e.calories||0),protein:a.protein+(e.protein||0),carbs:a.carbs+(e.carbs||0),fat:a.fat+(e.fat||0)}),{calories:0,protein:0,carbs:0,fat:0});
+  const loggedDays = new Set(weekNut.map(e=>new Date(e.date).toDateString())).size;
+  const weekNutAvg = {
+    calories:loggedDays?Math.round(weekNutTot.calories/loggedDays):0,
+    protein: loggedDays?Math.round(weekNutTot.protein/loggedDays):0,
+    carbs:   loggedDays?Math.round(weekNutTot.carbs/loggedDays):0,
+    fat:     loggedDays?Math.round(weekNutTot.fat/loggedDays):0,
   };
 
-  const card  = { background:T.bgCard, border:`1px solid ${T.bgCardBorder}`, borderRadius:14, padding:16, marginBottom:12 };
-  const input = { background:T.bgInput, border:`1px solid ${T.bgInputBorder}`, borderRadius:8, padding:"10px 14px", color:T.textBody, fontFamily:"'DM Sans',sans-serif", fontSize:14, width:"100%", boxSizing:"border-box", outline:"none" };
-  const sel   = { ...input, cursor:"pointer" };
-  const lbl   = { fontSize:11, letterSpacing:"0.12em", textTransform:"uppercase", color:T.textFaint, marginBottom:10, fontWeight:600, fontFamily:"'DM Sans',sans-serif" };
-  const div_  = { height:1, background:T.divider, margin:"12px 0" };
-  const tag   = (type) => ({ display:"inline-block", padding:"2px 10px", borderRadius:20, fontSize:11, fontWeight:600, letterSpacing:"0.06em", textTransform:"uppercase", fontFamily:"'DM Sans',sans-serif", background:type==="strength"?T.accentDim:T.cardioDim, color:type==="strength"?T.accentText:T.cardioText });
-  const calBadge = { display:"inline-flex", alignItems:"center", gap:5, background:T.accentDark, border:`1px solid ${T.accentBorder}`, borderRadius:8, padding:"4px 10px", marginTop:8 };
+  // Sparkline
+  const recent8 = measurements.slice(-8);
+  const spMin=recent8.length?Math.min(...recent8.map(m=>m.weight)):0;
+  const spMax=recent8.length?Math.max(...recent8.map(m=>m.weight)):0;
+  const spR=spMax-spMin||1;
+  const spW=80,spH=28;
+  const spPts=recent8.map((m,i)=>({x:recent8.length===1?spW/2:(i/(recent8.length-1))*spW,y:spH-((m.weight-spMin)/spR)*(spH-4)-2}));
+  const spPath=spPts.map((p,i)=>(i===0?"M":"L")+" "+p.x+" "+p.y).join(" ");
 
-  const titles = { dashboard:"Overview", log:"Log Workout", history:"History", body:"Body", settings:"Settings" };
+  // Meas chart
+  const mMin=measurements.length?Math.min(...measurements.map(m=>m.weight)):0;
+  const mMax=measurements.length?Math.max(...measurements.map(m=>m.weight)):0;
+  const mR=mMax-mMin||1;
+  const mW=300,mH=120;
+  const mPts=measurements.map((m,i)=>({x:measurements.length===1?mW/2:(i/(measurements.length-1))*mW,y:mH-((m.weight-mMin)/mR)*(mH-20)-10,...m}));
+  const mPath=mPts.map((p,i)=>(i===0?"M":"L")+" "+p.x+" "+p.y).join(" ");
 
-  const themeLabel = themePref === "auto"
-    ? `Auto (${effectiveDark ? "Dark" : "Light"} — switches at ${effectiveDark ? "6am" : "8pm"})`
-    : themePref === "dark" ? "Dark" : "Light";
+  // Exercise chart
+  const allExNames=[...new Set(strengthW.flatMap(w=>(w.exercises||[]).map(e=>e.name)))].sort();
+  const filtExNames=histExSearch?allExNames.filter(n=>n.toLowerCase().includes(histExSearch.toLowerCase())):allExNames;
+  const exHist=histEx?strengthW.filter(w=>w.exercises?.some(e=>e.name===histEx)).map(w=>{
+    const ex=w.exercises.find(e=>e.name===histEx);
+    const v=ex.sets.filter(s=>parseFloat(s.weight)>0);
+    return {date:w.date,maxW:v.length?Math.max(...v.map(s=>parseFloat(s.weight))):0,
+            avgR:v.length?Math.round(v.reduce((a,s)=>a+parseFloat(s.reps||0),0)/v.length):0,sets:v.length};
+  }).filter(d=>d.maxW>0).reverse():[];
+  const exMax=exHist.length?Math.max(...exHist.map(d=>d.maxW)):0;
+  const exMin2=exHist.length?Math.min(...exHist.map(d=>d.maxW)):0;
+  const exR=exMax-exMin2||1;
+  const cW=300,cH=100;
+  const exPts=exHist.map((d,i)=>({x:exHist.length===1?cW/2:(i/(exHist.length-1))*cW,y:cH-((d.maxW-exMin2)/exR)*(cH-16)-8,...d}));
+  const exPath=exPts.map((p,i)=>(i===0?"M":"L")+" "+p.x+" "+p.y).join(" ");
 
-  // Keep global theme flag in sync for RestTimerBar
-  effectiveDarkGlobal = effectiveDark;
+  // Timer display
+  const timerDisp = String(Math.floor(elapsed/60)).padStart(2,"0")+":"+String(elapsed%60).padStart(2,"0");
+
+  // Style helpers
+  const nav = [
+    {id:"home",       label:"Home"},
+    {id:"activities", label:"Activities"},
+    {id:"nutrition",  label:"Nutrition"},
+    {id:"body",       label:"Body"},
+  ];
+
+  const btn = v => {
+    const base={border:"none",cursor:"pointer",fontWeight:600,fontFamily:"'DM Sans',sans-serif",transition:"all 0.15s"};
+    if (v==="sm")      return {...base,padding:"8px 14px",borderRadius:20,fontSize:13,background:T.bgSm,color:T.textBody,border:"1px solid "+T.bgSmBorder};
+    if (v==="sec")     return {...base,padding:"13px 24px",borderRadius:10,fontSize:15,background:T.bgSm,color:T.textBody,border:"1px solid "+T.bgSmBorder};
+    if (v==="danger")  return {...base,padding:"8px 12px",borderRadius:8,fontSize:13,background:T.dangerDim,color:T.danger,border:"1px solid "+T.dangerBorder};
+    if (v==="ghost")   return {...base,padding:"7px 12px",borderRadius:8,fontSize:12,background:"none",color:T.textFaint,border:"1px solid "+T.bgGhost};
+    return {...base,padding:"13px 24px",borderRadius:10,fontSize:15,background:T.accent,color:"#fff"};
+  };
+  const card   = {background:T.bgCard,border:"1px solid "+T.bgCardBorder,borderRadius:14,padding:16,marginBottom:12};
+  const inp    = {background:T.bgInput,border:"1px solid "+T.bgInputBorder,borderRadius:8,padding:"10px 14px",color:T.textBody,fontFamily:"'DM Sans',sans-serif",fontSize:14,width:"100%",boxSizing:"border-box",outline:"none"};
+  const sel    = {...inp,cursor:"pointer"};
+  const lbl    = {fontSize:11,letterSpacing:"0.12em",textTransform:"uppercase",color:T.textFaint,marginBottom:10,fontWeight:600,fontFamily:"'DM Sans',sans-serif"};
+  const divL   = {height:1,background:T.divider,margin:"12px 0"};
+  const tag    = t => ({display:"inline-block",padding:"2px 10px",borderRadius:20,fontSize:11,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",fontFamily:"'DM Sans',sans-serif",background:t==="strength"?T.accentDim:T.cardioDim,color:t==="strength"?T.accentText:T.cardioText});
+  const calB   = {display:"inline-flex",alignItems:"center",gap:5,background:T.accentDark,border:"1px solid "+T.accentBorder,borderRadius:8,padding:"4px 10px",marginTop:8};
+
+  const navIcons = {
+    home: (active) => (
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={active?T.accent:T.navInactive} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+        <polyline points="9 22 9 12 15 12 15 22"/>
+      </svg>
+    ),
+    activities: (active) => (
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={active?T.accent:T.navInactive} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+      </svg>
+    ),
+    nutrition: (active) => (
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={active?T.accent:T.navInactive} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M18 8h1a4 4 0 0 1 0 8h-1"/>
+        <path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/>
+        <line x1="6" y1="1" x2="6" y2="4"/>
+        <line x1="10" y1="1" x2="10" y2="4"/>
+        <line x1="14" y1="1" x2="14" y2="4"/>
+      </svg>
+    ),
+    body: (active) => (
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={active?T.accent:T.navInactive} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
+      </svg>
+    ),
+  };
 
   return (
-    <div style={{ minHeight:"100vh", background:T.bg, color:T.textBody, fontFamily:"'Playfair Display','Georgia',serif", display:"flex", flexDirection:"column", maxWidth:480, margin:"0 auto", transition:"background 0.4s, color 0.4s" }}>
+    <div style={{minHeight:"100vh",background:T.bg,color:T.textBody,fontFamily:"'Playfair Display','Georgia',serif",display:"flex",flexDirection:"column",maxWidth:480,margin:"0 auto",transition:"background 0.4s,color 0.4s"}}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;600;700&family=DM+Sans:wght@400;500;600;700&family=DM+Mono:wght@400;500&display=swap');
-        * { box-sizing:border-box; }
-        select option { background:${effectiveDark?"#1a1a2e":"#fff"}; color:${T.textBody}; }
-        ::-webkit-scrollbar { width:4px; }
-        ::-webkit-scrollbar-thumb { background:${T.scrollThumb}; border-radius:4px; }
-        input[type="date"]::-webkit-calendar-picker-indicator { filter:${effectiveDark?"invert(0.5)":"invert(0.3)"}; }
-        input::placeholder, textarea::placeholder { color:${T.textVeryFaint}; }
-        input:focus, select:focus, textarea:focus { border-color:rgba(37,99,235,0.6) !important; }
+        *{box-sizing:border-box;}
+        select option{background:${dark?"#1a1a2e":"#fff"};color:${T.textBody};}
+        ::-webkit-scrollbar{width:4px;}
+        ::-webkit-scrollbar-thumb{background:${dark?"rgba(255,255,255,0.1)":"rgba(0,0,0,0.15)"};border-radius:4px;}
+        input::placeholder,textarea::placeholder{color:${T.textVeryFaint};}
+        input:focus,select:focus,textarea:focus{border-color:rgba(37,99,235,0.6)!important;}
+        input[type=date]::-webkit-calendar-picker-indicator{filter:${dark?"invert(0.5)":"invert(0.3)"};}
       `}</style>
 
       {/* Header */}
-      <div style={{ padding:"24px 20px 14px", borderBottom:`1px solid ${T.divider}` }}>
-        <div style={{ fontSize:12, letterSpacing:"0.3em", textTransform:"uppercase", color:T.accentText, fontWeight:400, fontFamily:"'DM Sans',sans-serif" }}>LIFTR</div>
-        <div style={{ fontSize:26, fontWeight:700, marginTop:4, color:T.textPrimary, letterSpacing:"-0.01em" }}>{titles[view]}</div>
+      <div style={{padding:"24px 20px 14px",borderBottom:"1px solid "+T.divider,display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+        <div>
+          <div style={{fontSize:12,letterSpacing:"0.3em",textTransform:"uppercase",color:T.accentText,fontWeight:400,fontFamily:"'DM Sans',sans-serif"}}>LIFTR</div>
+          <div style={{fontSize:26,fontWeight:700,marginTop:4,color:T.textPrimary,letterSpacing:"-0.01em"}}>
+            {{home:"Overview",activities:"Activities",nutrition:"Nutrition",body:"Body"}[view]}
+          </div>
+        </div>
+        <div style={{display:"flex",alignItems:"center",gap:8,marginTop:4}}>
+          {syncing&&<div style={{fontSize:10,color:T.textFaint,fontFamily:"'DM Sans',sans-serif"}}>syncing...</div>}
+          <button onClick={()=>setShowSettings(true)} style={{background:"none",border:"1px solid "+T.bgSmBorder,borderRadius:10,cursor:"pointer",padding:"8px 10px",color:T.textMuted,fontSize:16,lineHeight:1}}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+            </svg>
+          </button>
+        </div>
       </div>
 
-      {/* Content */}
-      <div style={{ flex:1, padding:20, paddingBottom:80, overflowY:"auto" }}>
+      <div style={{flex:1,padding:20,paddingBottom:84,overflowY:"auto"}}>
 
-        {/* ── DASHBOARD ── */}
-        {view==="dashboard" && (
+        {/* ===== HOME ===== */}
+        {view==="home" && (
           <div>
-
-            {/* Hero — today summary + status */}
-            <div style={{ ...card, marginBottom:16 }}>
-              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
-                <div style={{ flex:1 }}>
-                  <div style={{ fontSize:13, color:T.textMuted, fontFamily:"'DM Sans',sans-serif", marginBottom:6 }}>
-                    {statusLine.emoji} {statusLine.text}
-                  </div>
-                  {todayData.sessions > 0 ? (
-                    <div style={{ display:"flex", gap:16, flexWrap:"wrap" }}>
-                      <div>
-                        <div style={{ fontSize:22, fontWeight:700, fontFamily:"'DM Mono',monospace", color:T.textPrimary, lineHeight:1 }}>{todayData.sessions}</div>
-                        <div style={{ fontSize:10, color:T.textFaint, textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:"'DM Sans',sans-serif", fontWeight:600 }}>sessions</div>
-                      </div>
-                      <div>
-                        <div style={{ fontSize:22, fontWeight:700, fontFamily:"'DM Mono',monospace", color:T.textPrimary, lineHeight:1 }}>{formatDuration(todayMins)}</div>
-                        <div style={{ fontSize:10, color:T.textFaint, textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:"'DM Sans',sans-serif", fontWeight:600 }}>today</div>
-                      </div>
-                      {todayCals > 0 && (
-                        <div>
-                          <div style={{ fontSize:22, fontWeight:700, fontFamily:"'DM Mono',monospace", color:T.textPrimary, lineHeight:1 }}>{todayCals}–{todayCalsHigh}</div>
-                          <div style={{ fontSize:10, color:T.textFaint, textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:"'DM Sans',sans-serif", fontWeight:600 }}>kcal</div>
+            {/* Hero */}
+            <div style={{...card,marginBottom:16}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:13,color:T.textMuted,fontFamily:"'DM Sans',sans-serif",marginBottom:6}}>{statusLine}</div>
+                  {today.count>0 ? (
+                    <div style={{display:"flex",gap:16,flexWrap:"wrap"}}>
+                      {[[today.count,"Sessions"],[fmtDur(todayMins),"Today"]].map(([v,l])=>(
+                        <div key={l}>
+                          <div style={{fontSize:22,fontWeight:700,fontFamily:"'DM Mono',monospace",color:T.textPrimary,lineHeight:1}}>{v}</div>
+                          <div style={{fontSize:10,color:T.textFaint,textTransform:"uppercase",letterSpacing:"0.08em",fontFamily:"'DM Sans',sans-serif",fontWeight:600}}>{l}</div>
                         </div>
-                      )}
+                      ))}
+                      {todayCals>0&&<div>
+                        <div style={{fontSize:22,fontWeight:700,fontFamily:"'DM Mono',monospace",color:T.textPrimary,lineHeight:1}}>{todayCals}-{todayCalsH}</div>
+                        <div style={{fontSize:10,color:T.textFaint,textTransform:"uppercase",letterSpacing:"0.08em",fontFamily:"'DM Sans',sans-serif",fontWeight:600}}>kcal</div>
+                      </div>}
                     </div>
                   ) : (
-                    <div style={{ fontSize:12, color:T.textFaint, fontFamily:"'DM Sans',sans-serif" }}>
-                      {workouts.length > 0 ? `${thisWeekSessions} sessions this week · ${formatDuration(thisWeekMins)}` : "No sessions logged yet"}
+                    <div style={{fontSize:12,color:T.textFaint,fontFamily:"'DM Sans',sans-serif"}}>
+                      {workouts.length?weekCount+" sessions this week - "+fmtDur(weekMins):"No sessions logged yet"}
                     </div>
                   )}
                 </div>
-                <button style={{ ...btn("primary"), padding:"10px 16px", fontSize:13, borderRadius:12, flexShrink:0, marginLeft:12 }}
-                  onClick={()=>{ setView("log"); }}>
-                  + Log
-                </button>
+                <button style={{...btn("primary"),padding:"10px 16px",fontSize:13,borderRadius:12,flexShrink:0,marginLeft:12}} onClick={()=>setView("activities")}>+ Log</button>
               </div>
             </div>
 
-            {/* 7-day volume bar strip */}
-            <div style={{ ...card, marginBottom:16 }}>
-              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:12 }}>
+            {/* 7-day bars */}
+            <div style={{...card,marginBottom:16}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:12}}>
                 <div style={lbl}>7-Day Activity</div>
-                <div style={{ fontSize:11, color:T.textFaint, fontFamily:"'DM Sans',sans-serif" }}>
-                  <span style={{ display:"inline-flex", alignItems:"center", gap:4, marginRight:10 }}>
-                    <span style={{ width:8, height:8, borderRadius:2, background:T.accent, display:"inline-block" }} /> Strength
+                <div style={{fontSize:11,color:T.textFaint,fontFamily:"'DM Sans',sans-serif"}}>
+                  <span style={{display:"inline-flex",alignItems:"center",gap:4,marginRight:10}}>
+                    <span style={{width:8,height:8,borderRadius:2,background:T.accent,display:"inline-block"}}/>Strength
                   </span>
-                  <span style={{ display:"inline-flex", alignItems:"center", gap:4 }}>
-                    <span style={{ width:8, height:8, borderRadius:2, background:T.cardio, display:"inline-block" }} /> Cardio
+                  <span style={{display:"inline-flex",alignItems:"center",gap:4}}>
+                    <span style={{width:8,height:8,borderRadius:2,background:T.cardio,display:"inline-block"}}/>Cardio
                   </span>
                 </div>
               </div>
-              <div style={{ display:"flex", gap:6, alignItems:"flex-end", height:72 }}>
-                {last7Days.map((d,i)=>{
-                  const isToday = i===6;
-                  const barHeight = d.totalVol > 0 ? Math.max(6, Math.round((d.totalVol/maxDayVol)*56)) : 0;
-                  const barColor = d.hasStrength && d.hasCardio
-                    ? T.accent
-                    : d.hasStrength ? T.accent
-                    : d.hasCardio ? T.cardio
-                    : T.bgSm;
+              <div style={{display:"flex",gap:6,alignItems:"flex-end",height:72}}>
+                {days7.map((d,i)=>{
+                  const bh=d.vol>0?Math.max(6,Math.round((d.vol/maxVol)*56)):3;
                   return (
-                    <div key={i} style={{ flex:1, display:"flex", flexDirection:"column", alignItems:"center", gap:6, height:"100%", justifyContent:"flex-end" }}>
-                      <div style={{
-                        width:"60%", margin:"0 auto",
-                        height: d.totalVol > 0 ? barHeight : 3,
-                        borderRadius:4,
-                        overflow:"hidden",
-                        opacity: d.totalVol > 0 ? 1 : 0.2,
-                        display:"flex", flexDirection:"column",
-                      }}>
-                        {d.hasStrength && <div style={{ flex: d.hasCardio ? 1 : "none", height: d.hasCardio ? undefined : "100%", background: T.accent }} />}
-                        {d.hasCardio   && <div style={{ flex: d.hasStrength ? 1 : "none", height: d.hasStrength ? undefined : "100%", background: T.cardio }} />}
-                        {!d.hasStrength && !d.hasCardio && <div style={{ flex:1, background: T.bgSm }} />}
+                    <div key={i} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:6,height:"100%",justifyContent:"flex-end"}}>
+                      <div style={{width:"60%",margin:"0 auto",height:bh,borderRadius:4,overflow:"hidden",opacity:d.vol>0?1:0.2,display:"flex",flexDirection:"column"}}>
+                        {d.hasS&&<div style={{flex:d.hasC?1:"none",height:d.hasC?undefined:"100%",background:T.accent}}/>}
+                        {d.hasC&&<div style={{flex:d.hasS?1:"none",height:d.hasS?undefined:"100%",background:T.cardio}}/>}
+                        {!d.hasS&&!d.hasC&&<div style={{flex:1,background:T.bgSm}}/>}
                       </div>
-                      <div style={{ fontSize:10, fontFamily:"'DM Sans',sans-serif", fontWeight:isToday?700:400, color:isToday?T.accentText:T.textFaint }}>{d.label}</div>
+                      <div style={{fontSize:10,fontFamily:"'DM Sans',sans-serif",fontWeight:i===6?700:400,color:i===6?T.accentText:T.textFaint}}>{d.label}</div>
                     </div>
                   );
                 })}
               </div>
             </div>
 
-            {/* This week stats row */}
-            <div style={{ display:"flex", gap:10, marginBottom:16 }}>
-              <div style={{ ...card, flex:1, marginBottom:0 }}>
-                <div style={{ fontSize:10, color:T.textFaint, textTransform:"uppercase", letterSpacing:"0.1em", fontFamily:"'DM Sans',sans-serif", fontWeight:600, marginBottom:6 }}>Sets This Week</div>
-                <div style={{ fontSize:24, fontWeight:700, fontFamily:"'DM Mono',monospace", color:T.textPrimary, lineHeight:1, marginBottom:4 }}>{thisWeekSets}</div>
-                {volumeChange !== null && (
-                  <div style={{ fontSize:11, fontFamily:"'DM Sans',sans-serif", color:volumeChange>0?T.accent:volumeChange<0?T.danger:T.textFaint, fontWeight:600 }}>
-                    {volumeChange>0?`↑ ${volumeChange}%`:volumeChange<0?`↓ ${Math.abs(volumeChange)}%`:"→ same"} vs last week
-                  </div>
-                )}
+            {/* Week stats */}
+            <div style={{display:"flex",gap:10,marginBottom:16}}>
+              <div style={{...card,flex:1,marginBottom:0}}>
+                <div style={{fontSize:10,color:T.textFaint,textTransform:"uppercase",letterSpacing:"0.1em",fontFamily:"'DM Sans',sans-serif",fontWeight:600,marginBottom:6}}>Sets This Week</div>
+                <div style={{fontSize:24,fontWeight:700,fontFamily:"'DM Mono',monospace",color:T.textPrimary,lineHeight:1,marginBottom:4}}>{weekSets}</div>
+                {volChg!==null&&<div style={{fontSize:11,fontFamily:"'DM Sans',sans-serif",color:volChg>0?T.accent:volChg<0?T.danger:T.textFaint,fontWeight:600}}>{volChg>0?"^ "+volChg+"%":volChg<0?"v "+Math.abs(volChg)+"%":"same"} vs last week</div>}
               </div>
-              <div style={{ ...card, flex:1, marginBottom:0 }}>
-                <div style={{ fontSize:10, color:T.textFaint, textTransform:"uppercase", letterSpacing:"0.1em", fontFamily:"'DM Sans',sans-serif", fontWeight:600, marginBottom:6 }}>Time This Week</div>
-                <div style={{ fontSize:24, fontWeight:700, fontFamily:"'DM Mono',monospace", color:T.textPrimary, lineHeight:1, marginBottom:4 }}>{formatDuration(thisWeekMins)}</div>
-                <div style={{ fontSize:11, color:T.textFaint, fontFamily:"'DM Sans',sans-serif" }}>{thisWeekSessions} session{thisWeekSessions!==1?"s":""}</div>
+              <div style={{...card,flex:1,marginBottom:0}}>
+                <div style={{fontSize:10,color:T.textFaint,textTransform:"uppercase",letterSpacing:"0.1em",fontFamily:"'DM Sans',sans-serif",fontWeight:600,marginBottom:6}}>Time This Week</div>
+                <div style={{fontSize:24,fontWeight:700,fontFamily:"'DM Mono',monospace",color:T.textPrimary,lineHeight:1,marginBottom:4}}>{fmtDur(weekMins)}</div>
+                <div style={{fontSize:11,color:T.textFaint,fontFamily:"'DM Sans',sans-serif"}}>{weekCount} session{weekCount!==1?"s":""}</div>
               </div>
             </div>
 
             {/* PRs */}
-            {recentPRs.length > 0 && (
-              <div style={{ ...card, marginBottom:16, background:effectiveDark?"rgba(79,142,247,0.06)":"rgba(79,142,247,0.04)", border:`1px solid ${T.accentBorder}` }}>
-                <div style={{ ...lbl, marginBottom:10 }}>New PRs This Week 🏆</div>
-                {recentPRs.map((pr,i)=>(
-                  <div key={i} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", paddingBottom:i<recentPRs.length-1?10:0, marginBottom:i<recentPRs.length-1?10:0, borderBottom:i<recentPRs.length-1?`1px solid ${T.divider}`:"none" }}>
-                    <div style={{ fontSize:14, fontFamily:"'DM Sans',sans-serif", color:T.textBody, fontWeight:500 }}>{pr.name}</div>
-                    <div style={{ fontFamily:"'DM Mono',monospace", fontWeight:700, fontSize:15, color:T.accent }}>{pr.weight} lbs</div>
+            {weekPRs.length>0&&(
+              <div style={{...card,marginBottom:16,background:dark?"rgba(37,99,235,0.06)":"rgba(37,99,235,0.04)",border:"1px solid "+T.accentBorder}}>
+                <div style={{...lbl,marginBottom:10}}>New PRs This Week</div>
+                {weekPRs.map((pr,i)=>(
+                  <div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",paddingBottom:i<weekPRs.length-1?10:0,marginBottom:i<weekPRs.length-1?10:0,borderBottom:i<weekPRs.length-1?"1px solid "+T.divider:"none"}}>
+                    <div style={{fontSize:14,fontFamily:"'DM Sans',sans-serif",color:T.textBody,fontWeight:500}}>{pr.name}</div>
+                    <div style={{fontFamily:"'DM Mono',monospace",fontWeight:700,fontSize:15,color:T.accent}}>{pr.weight} lbs</div>
                   </div>
                 ))}
               </div>
             )}
 
-            {/* Today's sessions */}
-            {todayData.sessions > 0 && (
-              <div style={{ marginBottom:4 }}>
-                <div style={{ ...lbl, marginBottom:10 }}>Today's Sessions</div>
-                {todayData.dayWorkouts.map(w=>(
+            {/* Today sessions */}
+            {today.count>0&&(
+              <div style={{marginBottom:16}}>
+                <div style={{...lbl,marginBottom:10}}>Today's Sessions</div>
+                {today.sessions.map(w=>(
                   <div key={w.id} style={card}>
-                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
                       <div>
-                        <div style={{ fontWeight:600, fontSize:15, color:T.textPrimary, marginBottom:3 }}>
-                          {w.type==="strength"?(w.muscleGroups?.length?w.muscleGroups.join(" + "):"Strength"):w.cardioType}
-                        </div>
-                        <div style={{ fontSize:12, color:T.textFaint, fontFamily:"'DM Sans',sans-serif" }}>{formatDuration(w.duration)}</div>
+                        <div style={{fontWeight:600,fontSize:15,color:T.textPrimary,marginBottom:3}}>{w.type==="strength"?(w.muscleGroups?.length?w.muscleGroups.join(" + "):"Strength"):w.cardioType}</div>
+                        <div style={{fontSize:12,color:T.textFaint,fontFamily:"'DM Sans',sans-serif"}}>{fmtDur(w.duration)}</div>
                       </div>
                       <span style={tag(w.type)}>{w.type}</span>
                     </div>
-                    {w.type==="strength" && w.exercises?.length>0 && (
-                      <div style={{ fontSize:12, color:T.textMuted, fontFamily:"'DM Sans',sans-serif", marginTop:6 }}>{w.exercises.map(e=>e.name).join(" · ")}</div>
-                    )}
-                    {w.type==="cardio" && w.distance && <div style={{ fontSize:12, color:T.textMuted, fontFamily:"'DM Sans',sans-serif", marginTop:6 }}>{w.distance} mi</div>}
-                    {w.calories && <div style={calBadge}><span>🔥</span><span style={{ fontFamily:"'DM Mono',monospace", fontWeight:600, fontSize:12, color:T.textPrimary }}>{w.calories.low}–{w.calories.high}</span><span style={{ fontSize:11, color:T.textFaint, fontFamily:"'DM Sans',sans-serif" }}>kcal</span></div>}
+                    {w.type==="strength"&&w.exercises?.length>0&&<div style={{fontSize:12,color:T.textMuted,fontFamily:"'DM Sans',sans-serif",marginTop:6}}>{w.exercises.map(e=>e.name).join(" - ")}</div>}
+                    {w.type==="cardio"&&w.distance&&<div style={{fontSize:12,color:T.textMuted,fontFamily:"'DM Sans',sans-serif",marginTop:6}}>{w.distance} mi</div>}
+                    {w.calories&&<div style={calB}><span>*</span><span style={{fontFamily:"'DM Mono',monospace",fontWeight:600,fontSize:12,color:T.textPrimary}}>{w.calories.low}-{w.calories.high}</span><span style={{fontSize:11,color:T.textFaint,fontFamily:"'DM Sans',sans-serif"}}>kcal</span></div>}
                   </div>
                 ))}
               </div>
             )}
 
-            {/* Last workout (if nothing today) */}
-            {todayData.sessions === 0 && workouts.length > 0 && (() => {
-              const w = workouts[0];
-              const daysAgo = Math.floor((now-new Date(w.date))/86400000);
-              const daysLabel = daysAgo===1?"Yesterday":`${daysAgo} days ago`;
+            {/* Last session if nothing today */}
+            {today.count===0&&workouts.length>0&&(()=>{
+              const w=workouts[0];
+              const da=Math.floor((now-new Date(w.date))/86400000);
               return (
-                <div>
-                  <div style={{ ...lbl, marginBottom:10 }}>Last Session</div>
+                <div style={{marginBottom:16}}>
+                  <div style={{...lbl,marginBottom:10}}>Last Session</div>
                   <div style={card}>
-                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:6 }}>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:6}}>
                       <div>
-                        <div style={{ fontWeight:600, fontSize:15, color:T.textPrimary, marginBottom:3 }}>
-                          {w.type==="strength"?(w.muscleGroups?.length?w.muscleGroups.join(" + "):"Strength"):w.cardioType}
-                        </div>
-                        <div style={{ fontSize:12, color:T.textFaint, fontFamily:"'DM Sans',sans-serif" }}>{daysLabel} · {formatDuration(w.duration)}</div>
+                        <div style={{fontWeight:600,fontSize:15,color:T.textPrimary,marginBottom:3}}>{w.type==="strength"?(w.muscleGroups?.length?w.muscleGroups.join(" + "):"Strength"):w.cardioType}</div>
+                        <div style={{fontSize:12,color:T.textFaint,fontFamily:"'DM Sans',sans-serif"}}>{da===1?"Yesterday":da+" days ago"} - {fmtDur(w.duration)}</div>
                       </div>
                       <span style={tag(w.type)}>{w.type}</span>
                     </div>
-                    {w.type==="strength" && w.exercises?.length>0 && <div style={{ fontSize:12, color:T.textMuted, fontFamily:"'DM Sans',sans-serif" }}>{w.exercises.map(e=>e.name).join(" · ")}</div>}
-                    {w.calories && <div style={calBadge}><span>🔥</span><span style={{ fontFamily:"'DM Mono',monospace", fontWeight:600, fontSize:12, color:T.textPrimary }}>{w.calories.low}–{w.calories.high}</span><span style={{ fontSize:11, color:T.textFaint, fontFamily:"'DM Sans',sans-serif" }}>kcal</span></div>}
+                    {w.type==="strength"&&w.exercises?.length>0&&<div style={{fontSize:12,color:T.textMuted,fontFamily:"'DM Sans',sans-serif"}}>{w.exercises.map(e=>e.name).join(" - ")}</div>}
+                    {w.calories&&<div style={calB}><span>*</span><span style={{fontFamily:"'DM Mono',monospace",fontWeight:600,fontSize:12,color:T.textPrimary}}>{w.calories.low}-{w.calories.high}</span><span style={{fontSize:11,color:T.textFaint,fontFamily:"'DM Sans',sans-serif"}}>kcal</span></div>}
                   </div>
                 </div>
               );
             })()}
 
-            {/* Body weight sparkline */}
-            {recentMeasurements.length >= 2 && (
-              <div style={{ ...card, marginTop:4 }}>
-                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-                  <div>
-                    <div style={{ fontSize:10, color:T.textFaint, textTransform:"uppercase", letterSpacing:"0.1em", fontFamily:"'DM Sans',sans-serif", fontWeight:600, marginBottom:4 }}>Body Weight</div>
-                    <div style={{ fontSize:22, fontWeight:700, fontFamily:"'DM Mono',monospace", color:T.textPrimary }}>{recentMeasurements[recentMeasurements.length-1].weight} <span style={{ fontSize:13, color:T.textFaint, fontWeight:400 }}>lbs</span></div>
-                    {(()=>{ const diff=(recentMeasurements[recentMeasurements.length-1].weight-recentMeasurements[0].weight).toFixed(1); const sign=diff>0?"+":""; const col=diff<0?T.accent:diff>0?T.danger:T.textFaint; return <div style={{ fontSize:12, color:col, fontFamily:"'DM Sans',sans-serif", fontWeight:600, marginTop:2 }}>{sign}{diff} lbs</div>; })()}
+            {/* Energy balance chart */}
+            {(bmr||bal7.some(d=>d.net!==null))&&(
+              <div style={{...card,marginBottom:16}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+                  <div style={{...lbl,marginBottom:0}}>Energy Balance</div>
+                  {bmr&&<div style={{fontSize:11,color:T.textFaint,fontFamily:"'DM Sans',sans-serif"}}>BMR {bmr.toLocaleString()} kcal</div>}
+                </div>
+                <div style={{position:"relative",height:140,marginBottom:8}}>
+                  <div style={{position:"absolute",top:70,left:0,right:0,height:1,background:T.divider}}/>
+                  <div style={{display:"flex",gap:4,height:"100%"}}>
+                    {bal7.map((d,i)=>{
+                      const has=d.net!==null;
+                      const isSur=has&&d.net>0;
+                      const isDef=has&&d.net<0;
+                      const bh=has?Math.max(4,Math.round((Math.abs(d.net)/maxBal)*60)):0;
+                      return (
+                        <div key={i} style={{flex:1,display:"flex",flexDirection:"column",height:"100%"}}>
+                          <div style={{flex:1,display:"flex",alignItems:"flex-end",width:"100%"}}>
+                            <div style={{width:"60%",margin:"0 auto",height:isSur?bh:0,background:T.danger,borderRadius:"4px 4px 0 0",opacity:isSur?1:0}}/>
+                          </div>
+                          <div style={{height:1}}/>
+                          <div style={{flex:1,display:"flex",alignItems:"flex-start",width:"100%"}}>
+                            <div style={{width:"60%",margin:"0 auto",height:isDef?bh:(!has?3:0),background:isDef?T.accent:T.bgSm,borderRadius:"0 0 4px 4px",opacity:has?1:0.2}}/>
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
-                  <svg width={sparkW} height={sparkH} style={{ overflow:"visible" }}>
-                    <defs><linearGradient id="sparkGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={T.accent} stopOpacity="0.3"/><stop offset="100%" stopColor={T.accent} stopOpacity="0"/></linearGradient></defs>
-                    <path d={`${sparkPath} L ${sparkPts[sparkPts.length-1].x} ${sparkH} L ${sparkPts[0].x} ${sparkH} Z`} fill="url(#sparkGrad)" />
-                    <path d={sparkPath} fill="none" stroke={T.accent} strokeWidth="2" strokeLinejoin="round" />
-                    <circle cx={sparkPts[sparkPts.length-1].x} cy={sparkPts[sparkPts.length-1].y} r="3" fill={T.accent} />
+                </div>
+                <div style={{display:"flex",gap:4,marginBottom:10}}>
+                  {bal7.map((d,i)=>(
+                    <div key={i} style={{flex:1,textAlign:"center",fontSize:10,fontFamily:"'DM Sans',sans-serif",fontWeight:d.isToday?700:400,color:d.isToday?T.accentText:T.textFaint}}>{d.label}</div>
+                  ))}
+                </div>
+                <div style={{display:"flex",gap:16,justifyContent:"center",paddingTop:8,borderTop:"1px solid "+T.divider}}>
+                  {[["Deficit",T.accent],["Surplus",T.danger]].map(([l,c])=>(
+                    <div key={l} style={{display:"flex",alignItems:"center",gap:5}}>
+                      <div style={{width:10,height:10,borderRadius:2,background:c}}/>
+                      <div style={{fontSize:11,color:T.textFaint,fontFamily:"'DM Sans',sans-serif"}}>{l}</div>
+                    </div>
+                  ))}
+                  {todayBal.net!==null&&<div style={{fontSize:11,fontFamily:"'DM Mono',monospace",fontWeight:700,color:todayBal.net<0?T.accent:T.danger}}>{todayBal.net>0?"+":""}{todayBal.net} kcal today</div>}
+                </div>
+                {!bal7.some(d=>d.net!==null)&&<div style={{fontSize:12,color:T.textFaint,fontFamily:"'DM Sans',sans-serif",textAlign:"center",marginTop:8}}>Log food in Nutrition to see your balance</div>}
+              </div>
+            )}
+
+            {/* Nutrition weekly */}
+            {(weekNut.length>0||nutTargets.calories>0)&&(
+              <div style={{...card,cursor:"pointer",marginBottom:16}} onClick={()=>setView("nutrition")}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+                  <div style={{...lbl,marginBottom:0}}>Nutrition This Week</div>
+                  <div style={{fontSize:11,color:T.accentText,fontFamily:"'DM Sans',sans-serif"}}>View</div>
+                </div>
+                <div style={{display:"flex",gap:10,marginBottom:16}}>
+                  <div style={{flex:1,background:T.bgSm,borderRadius:10,padding:"10px 12px"}}>
+                    <div style={{fontSize:10,color:T.textFaint,fontFamily:"'DM Sans',sans-serif",fontWeight:600,textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:4}}>Avg Calories</div>
+                    <div style={{fontSize:22,fontWeight:700,fontFamily:"'DM Mono',monospace",color:T.textPrimary,lineHeight:1}}>{weekNutAvg.calories.toLocaleString()}</div>
+                    <div style={{fontSize:11,color:weekNutAvg.calories>nutTargets.calories?T.danger:T.textFaint,fontFamily:"'DM Sans',sans-serif",marginTop:2}}>{nutTargets.calories?"/ "+nutTargets.calories+" target":"kcal/day"}</div>
+                  </div>
+                  <div style={{flex:1,background:T.bgSm,borderRadius:10,padding:"10px 12px"}}>
+                    <div style={{fontSize:10,color:T.textFaint,fontFamily:"'DM Sans',sans-serif",fontWeight:600,textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:4}}>Days Logged</div>
+                    <div style={{fontSize:22,fontWeight:700,fontFamily:"'DM Mono',monospace",color:T.textPrimary,lineHeight:1}}>{loggedDays}<span style={{fontSize:13,color:T.textFaint,fontWeight:400}}>/7</span></div>
+                  </div>
+                </div>
+                {(()=>{
+                  const d7=Array.from({length:7},(_,i)=>{
+                    const d=new Date(); d.setDate(d.getDate()-(6-i));
+                    const ds=d.toDateString();
+                    const ee=nutrition.filter(e=>new Date(e.date).toDateString()===ds);
+                    return {label:d.toLocaleDateString("en-US",{weekday:"short"}).slice(0,1),isToday:i===6,
+                            p:ee.reduce((a,e)=>a+(e.protein||0),0),c:ee.reduce((a,e)=>a+(e.carbs||0),0),f:ee.reduce((a,e)=>a+(e.fat||0),0)};
+                  });
+                  const maxG=Math.max(...d7.map(d=>d.p+d.c+d.f),nutTargets.protein+nutTargets.carbs+nutTargets.fat,1);
+                  const cH2=72;
+                  return (
+                    <div>
+                      <div style={{fontSize:10,color:T.textFaint,fontFamily:"'DM Sans',sans-serif",fontWeight:600,textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:10}}>Daily Macros (g)</div>
+                      <div style={{display:"flex",gap:4,alignItems:"flex-end",height:cH2+20}}>
+                        {d7.map((d,i)=>{
+                          const tot=d.p+d.c+d.f;
+                          const th=tot>0?Math.max(4,Math.round((tot/maxG)*cH2)):0;
+                          const ph=tot>0?Math.round((d.p/tot)*th):0;
+                          const ch=tot>0?Math.round((d.c/tot)*th):0;
+                          const fh=th-ph-ch;
+                          return (
+                            <div key={i} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:4,height:cH2+20,justifyContent:"flex-end"}}>
+                              <div style={{width:"70%",display:"flex",flexDirection:"column",borderRadius:4,overflow:"hidden",opacity:tot>0?1:0.2}}>
+                                {tot>0?(
+                                  <div style={{display:"flex",flexDirection:"column"}}>
+                                    <div style={{height:Math.max(fh,d.f>0?2:0),background:"#fb923c"}}/>
+                                    <div style={{height:ch,background:"#a78bfa",minHeight:d.c>0?2:0}}/>
+                                    <div style={{height:ph,background:"#60a5fa",minHeight:d.p>0?2:0}}/>
+                                  </div>
+                                ):<div style={{height:3,background:T.bgSm}}/>}
+                              </div>
+                              <div style={{fontSize:10,fontFamily:"'DM Sans',sans-serif",fontWeight:d.isToday?700:400,color:d.isToday?T.accentText:T.textFaint}}>{d.label}</div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      <div style={{display:"flex",gap:12,marginTop:12,paddingTop:12,borderTop:"1px solid "+T.divider}}>
+                        {[["Protein",weekNutAvg.protein,"#60a5fa"],["Carbs",weekNutAvg.carbs,"#a78bfa"],["Fat",weekNutAvg.fat,"#fb923c"]].map(([l,v,c])=>(
+                          <div key={l} style={{display:"flex",alignItems:"center",gap:5}}>
+                            <div style={{width:8,height:8,borderRadius:2,background:c}}/>
+                            <div style={{fontSize:11,fontFamily:"'DM Sans',sans-serif",color:T.textFaint}}>{l}</div>
+                            <div style={{fontSize:11,fontFamily:"'DM Mono',monospace",fontWeight:600,color:T.textBody}}>{v}g</div>
+                          </div>
+                        ))}
+                      </div>
+                      {realTodayTots.calories>0&&(
+                        <div style={{marginTop:12,paddingTop:12,borderTop:"1px solid "+T.divider,display:"flex",justifyContent:"space-between"}}>
+                          <div style={{fontSize:12,color:T.textFaint,fontFamily:"'DM Sans',sans-serif"}}>Today</div>
+                          <div style={{fontSize:12,fontFamily:"'DM Sans',sans-serif",color:T.textMuted}}>{realTodayTots.calories} kcal - P:{realTodayTots.protein}g C:{realTodayTots.carbs}g F:{realTodayTots.fat}g</div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+              </div>
+            )}
+
+            {/* Body weight sparkline */}
+            {recent8.length>=2&&(
+              <div style={card}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                  <div>
+                    <div style={{fontSize:10,color:T.textFaint,textTransform:"uppercase",letterSpacing:"0.1em",fontFamily:"'DM Sans',sans-serif",fontWeight:600,marginBottom:4}}>Body Weight</div>
+                    <div style={{fontSize:22,fontWeight:700,fontFamily:"'DM Mono',monospace",color:T.textPrimary}}>{recent8[recent8.length-1].weight} <span style={{fontSize:13,color:T.textFaint,fontWeight:400}}>lbs</span></div>
+                    {(()=>{const diff=(recent8[recent8.length-1].weight-recent8[0].weight).toFixed(1);const sign=diff>0?"+":"";const col=diff<0?T.accentText:diff>0?T.danger:T.textFaint;return <div style={{fontSize:12,color:col,fontFamily:"'DM Sans',sans-serif",fontWeight:600,marginTop:2}}>{sign}{diff} lbs</div>; })()}
+                  </div>
+                  <svg width={spW} height={spH} style={{overflow:"visible"}}>
+                    <defs><linearGradient id="spG" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={T.accent} stopOpacity="0.3"/><stop offset="100%" stopColor={T.accent} stopOpacity="0"/></linearGradient></defs>
+                    <path d={spPath+" L "+spPts[spPts.length-1].x+" "+spH+" L "+spPts[0].x+" "+spH+" Z"} fill="url(#spG)"/>
+                    <path d={spPath} fill="none" stroke={T.accent} strokeWidth="2" strokeLinejoin="round"/>
+                    <circle cx={spPts[spPts.length-1].x} cy={spPts[spPts.length-1].y} r="3" fill={T.accent}/>
                   </svg>
                 </div>
               </div>
             )}
 
-            {workouts.length===0 && (
-              <div style={{ textAlign:"center", padding:"32px 0 0", color:T.textFaint, fontSize:14, fontFamily:"'DM Sans',sans-serif" }}>
-                Log your first session to see your stats here.
-              </div>
-            )}
-
+            {workouts.length===0&&<div style={{textAlign:"center",padding:"32px 0",color:T.textFaint,fontSize:14,fontFamily:"'DM Sans',sans-serif"}}>Log your first session to see stats here.</div>}
           </div>
         )}
 
-        {/* ── LOG ── */}
-        {view==="log" && (
+        {/* ===== ACTIVITIES ===== */}
+        {view==="activities" && (
           <div>
-            {logStep==="type" && (
+            {/* Strength logging */}
+            {logStep==="details"&&wType==="strength"&&(
               <div>
-                <div style={lbl}>Choose Type</div>
-                <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
-                  {[["🏋️","Strength Training","Track sets, reps & weight","strength"],["🏃","Cardio","Run, bike, row & more","cardio"]].map(([icon,title,sub,type])=>(
-                    <button key={type} style={{ ...btn("secondary"), padding:20, borderRadius:14, display:"flex", alignItems:"center", gap:16, textAlign:"left" }} onClick={()=>startWorkout(type)}>
-                      <span style={{ fontSize:32 }}>{icon}</span>
-                      <div>
-                        <div style={{ fontWeight:700, fontSize:17, fontFamily:"'Playfair Display',serif", color:T.textPrimary }}>{title}</div>
-                        <div style={{ fontSize:12, color:T.textFaint, marginTop:2, fontFamily:"'DM Sans',sans-serif" }}>{sub}</div>
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {logStep==="details" && workoutType==="strength" && (
-              <div>
-                <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:20, background:T.accentDark, border:`1px solid ${T.accentBorder}`, borderRadius:12, padding:"12px 16px" }}>
-                  <div style={{ fontSize:12, color:T.accentText, fontWeight:600, letterSpacing:"0.1em", textTransform:"uppercase", fontFamily:"'DM Sans',sans-serif" }}>Active</div>
-                  <div style={{ display:"flex", alignItems:"center", gap:12 }}>
-                    {exercises.length > 0 && (
-                      <div style={{ fontSize:12, color:T.accentText, fontFamily:"'DM Sans',sans-serif", fontWeight:500 }}>
-                        {muscleGroupLabel(exercises)}
-                      </div>
-                    )}
-                    <div style={{ fontSize:22, fontFamily:"'DM Mono',monospace", color:T.accent, fontWeight:500 }}>{timerDisplay}</div>
+                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:20,background:T.accentDark,border:"1px solid "+T.accentBorder,borderRadius:12,padding:"12px 16px"}}>
+                  <div style={{fontSize:12,color:T.accentText,fontWeight:600,letterSpacing:"0.1em",textTransform:"uppercase",fontFamily:"'DM Sans',sans-serif"}}>Active</div>
+                  <div style={{display:"flex",alignItems:"center",gap:12}}>
+                    {exercises.length>0&&<div style={{fontSize:12,color:T.accentText,fontFamily:"'DM Sans',sans-serif",fontWeight:500}}>{mgLabel(exercises)}</div>}
+                    <div style={{fontSize:22,fontFamily:"'DM Mono',monospace",color:T.accent,fontWeight:500}}>{timerDisp}</div>
                   </div>
                 </div>
 
-
-
-                <div style={{ marginBottom:16 }}>
+                {/* Exercise search */}
+                <div style={{marginBottom:16}}>
                   <div style={lbl}>Add Exercise</div>
-
-                  {/* Muscle group filter chips */}
-                  <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginBottom:10 }}>
-                    <button
-                      onClick={()=>setExMuscleFilter(null)}
-                      style={{ padding:"5px 12px", borderRadius:20, border:"none", cursor:"pointer", fontSize:12, fontWeight:600, fontFamily:"'DM Sans',sans-serif", transition:"all 0.15s",
-                        background: exMuscleFilter===null ? T.accent : T.bgSm,
-                        color: exMuscleFilter===null ? "#fff" : T.textMuted,
-                      }}>All</button>
-                    {MUSCLE_GROUPS.map(g => (
-                      <button key={g}
-                        onClick={()=>setExMuscleFilter(exMuscleFilter===g ? null : g)}
-                        style={{ padding:"5px 12px", borderRadius:20, border:"none", cursor:"pointer", fontSize:12, fontWeight:600, fontFamily:"'DM Sans',sans-serif", transition:"all 0.15s",
-                          background: exMuscleFilter===g ? T.accent : T.bgSm,
-                          color: exMuscleFilter===g ? "#fff" : T.textMuted,
-                        }}>{g}</button>
+                  <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:10}}>
+                    <button onClick={()=>setExFilter(null)} style={{padding:"5px 12px",borderRadius:20,border:"none",cursor:"pointer",fontSize:12,fontWeight:600,fontFamily:"'DM Sans',sans-serif",background:exFilter===null?T.accent:T.bgSm,color:exFilter===null?"#fff":T.textMuted}}>All</button>
+                    {MUSCLE_GROUPS.map(g=>(
+                      <button key={g} onClick={()=>setExFilter(exFilter===g?null:g)} style={{padding:"5px 12px",borderRadius:20,border:"none",cursor:"pointer",fontSize:12,fontWeight:600,fontFamily:"'DM Sans',sans-serif",background:exFilter===g?T.accent:T.bgSm,color:exFilter===g?"#fff":T.textMuted}}>{g}</button>
                     ))}
                   </div>
-
-                  <div style={{ position:"relative" }}>
-                    <div style={{ display:"flex", gap:8 }}>
-                      <input
-                        ref={searchRef}
-                        style={{ ...input, flex:1 }}
-                        placeholder={exMuscleFilter ? `Search ${exMuscleFilter} exercises…` : "Search or add exercise…"}
-                        value={exSearchQuery}
-                        onChange={e=>{ setExSearchQuery(e.target.value); setExDropdownOpen(true); }}
-                        onFocus={()=>setExDropdownOpen(true)}
+                  <div style={{position:"relative"}}>
+                    <div style={{display:"flex",gap:8}}>
+                      <input ref={searchInputRef} style={{...inp,flex:1}} placeholder={exFilter?"Search "+exFilter+"...":"Search or add exercise..."} value={exQuery}
+                        onChange={e=>{setExQuery(e.target.value);setExOpen(true);}}
+                        onFocus={()=>setExOpen(true)}
                         onKeyDown={e=>{
-                          if (e.key==="Enter") {
-                            if (exDropdownItems.length===1) handleExerciseSelect(exDropdownItems[0]);
-                            else if (exDropdownItems.length===0) handleExerciseAdd();
-                            else handleExerciseAdd();
-                          }
-                          if (e.key==="Escape") setExDropdownOpen(false);
-                        }}
-                      />
-                      <button style={btn("primary")} onClick={handleExerciseAdd}>Add</button>
+                          if(e.key==="Enter"){if(exItems.length===1)pickEx(exItems[0]);else addNewEx();}
+                          if(e.key==="Escape")setExOpen(false);
+                        }}/>
+                      <button style={btn("primary")} onClick={addNewEx}>Add</button>
                     </div>
-
-                    {/* Dropdown */}
-                    {exDropdownOpen && (
-                      <div style={{
-                        position:"absolute", top:"calc(100% + 6px)", left:0, right:0,
-                        background:T.bgModal, border:`1px solid ${T.bgCardBorder}`,
-                        borderRadius:12, zIndex:50, maxHeight:220, overflowY:"auto",
-                        boxShadow: effectiveDark
-                          ? "0 8px 32px rgba(0,0,0,0.5)"
-                          : "0 8px 24px rgba(0,0,0,0.12)",
-                      }}>
-                        {exDropdownItems.length === 0 ? (
-                          <div style={{ padding:"12px 16px", fontSize:13, color:T.textFaint, fontFamily:"'DM Sans',sans-serif" }}>
-                            No match — press Add or Enter to save "<strong style={{ color:T.textBody }}>{exSearchQuery}</strong>"
-                          </div>
-                        ) : (
-                          exDropdownItems.map((ex, i) => {
-                            const isCustom = customExercises.includes(ex);
-                            const alreadyAdded = exercises.some(e=>e.name===ex);
-                            const muscleLabel = EXERCISE_MUSCLE_MAP[ex];
-                            return (
-                              <div key={ex} onClick={()=>!alreadyAdded && handleExerciseSelect(ex)} style={{
-                                display:"flex", alignItems:"center", justifyContent:"space-between",
-                                padding:"11px 16px", cursor:alreadyAdded?"default":"pointer",
-                                borderBottom: i < exDropdownItems.length-1 ? `1px solid ${T.divider}` : "none",
-                                background: alreadyAdded ? (effectiveDark?"rgba(255,255,255,0.02)":"rgba(0,0,0,0.02)") : "transparent",
-                              }}>
-                                <div style={{ display:"flex", alignItems:"center", gap:8, minWidth:0 }}>
-                                  <span style={{ fontSize:14, fontFamily:"'DM Sans',sans-serif", color: alreadyAdded ? T.textFaint : T.textBody }}>{ex}</span>
-                                  {isCustom && <span style={{ fontSize:10, background:T.accentDim, color:T.accentText, borderRadius:10, padding:"1px 7px", fontFamily:"'DM Sans',sans-serif", fontWeight:600, flexShrink:0 }}>custom</span>}
-                                  {alreadyAdded && <span style={{ fontSize:10, color:T.textFaint, fontFamily:"'DM Sans',sans-serif", flexShrink:0 }}>added</span>}
-                                </div>
-                                <div style={{ display:"flex", alignItems:"center", gap:8, flexShrink:0 }}>
-                                  {muscleLabel && !exMuscleFilter && (
-                                    <span style={{ fontSize:10, color:T.textFaint, fontFamily:"'DM Sans',sans-serif" }}>{muscleLabel}</span>
-                                  )}
-                                  {isCustom && !alreadyAdded && (
-                                    <button onClick={e=>{ e.stopPropagation(); deleteCustomExercise(ex); }} style={{ background:"none", border:"none", color:T.textFaint, cursor:"pointer", fontSize:14, padding:"0 4px", lineHeight:1 }}>×</button>
-                                  )}
-                                </div>
+                    {exOpen&&(
+                      <div style={{position:"absolute",top:"calc(100% + 6px)",left:0,right:0,background:T.bgModal,border:"1px solid "+T.bgCardBorder,borderRadius:12,zIndex:50,maxHeight:220,overflowY:"auto",boxShadow:dark?"0 8px 32px rgba(0,0,0,0.5)":"0 8px 24px rgba(0,0,0,0.12)"}}>
+                        {exItems.length===0?(
+                          <div style={{padding:"12px 16px",fontSize:13,color:T.textFaint,fontFamily:"'DM Sans',sans-serif"}}>No match - press Add to save "{exQuery}"</div>
+                        ):exItems.map((ex,i)=>{
+                          const isCust=customEx.includes(ex);
+                          const added=exercises.some(e=>e.name===ex);
+                          return (
+                            <div key={ex} onClick={()=>!added&&pickEx(ex)} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"11px 16px",cursor:added?"default":"pointer",borderBottom:i<exItems.length-1?"1px solid "+T.divider:"none",background:added?(dark?"rgba(255,255,255,0.02)":"rgba(0,0,0,0.02)"):"transparent"}}>
+                              <div style={{display:"flex",alignItems:"center",gap:8,minWidth:0}}>
+                                <span style={{fontSize:14,fontFamily:"'DM Sans',sans-serif",color:added?T.textFaint:T.textBody}}>{ex}</span>
+                                {isCust&&<span style={{fontSize:10,background:T.accentDim,color:T.accentText,borderRadius:10,padding:"1px 7px",fontFamily:"'DM Sans',sans-serif",fontWeight:600}}>custom</span>}
+                                {added&&<span style={{fontSize:10,color:T.textFaint,fontFamily:"'DM Sans',sans-serif"}}>added</span>}
                               </div>
-                            );
-                          })
-                        )}
+                              <div style={{display:"flex",alignItems:"center",gap:8,flexShrink:0}}>
+                                {EX_MAP[ex]&&!exFilter&&<span style={{fontSize:10,color:T.textFaint,fontFamily:"'DM Sans',sans-serif"}}>{EX_MAP[ex]}</span>}
+                                {isCust&&!added&&<button onClick={e=>{e.stopPropagation();delCustomEx(ex);}} style={{background:"none",border:"none",color:T.textFaint,cursor:"pointer",fontSize:14,padding:"0 4px",lineHeight:1}}>x</button>}
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
                     )}
                   </div>
-
-                  {/* Dismiss dropdown on outside click */}
-                  {exDropdownOpen && (
-                    <div style={{ position:"fixed", inset:0, zIndex:49 }} onClick={()=>setExDropdownOpen(false)} />
-                  )}
+                  {exOpen&&<div style={{position:"fixed",inset:0,zIndex:49}} onClick={()=>setExOpen(false)}/>}
                 </div>
 
+                {/* Exercise cards */}
                 {exercises.map((ex,ei)=>{
-                  const prior = getPriorSessions(ex.name);
+                  const prior=priorSessions(ex.name);
                   return (
-                    <div key={ei} style={{ ...card, marginBottom:14 }}>
-                      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:prior.length?10:12 }}>
-                        <div style={{ fontWeight:600, fontSize:16, color:T.textPrimary }}>{ex.name}</div>
-                        <button style={btn("danger")} onClick={()=>removeExercise(ei)}>Remove</button>
+                    <div key={ei} style={{...card,marginBottom:14}}>
+                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:prior.length?10:12}}>
+                        <div style={{fontWeight:600,fontSize:16,color:T.textPrimary}}>{ex.name}</div>
+                        <div style={{display:"flex",gap:6}}>
+                          <button style={btn("ghost")} onClick={()=>startRest(restSecs)}>Timer</button>
+                          <button style={btn("danger")} onClick={()=>removeEx(ei)}>Remove</button>
+                        </div>
                       </div>
-                      {prior.length>0 && (
-                        <div style={{ marginBottom:14 }}>
-                          <div style={{ fontSize:10, color:T.textFaint, letterSpacing:"0.12em", textTransform:"uppercase", fontWeight:700, marginBottom:8, fontFamily:"'DM Sans',sans-serif" }}>Previous Sessions</div>
-                          <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+                      {prior.length>0&&(
+                        <div style={{marginBottom:14}}>
+                          <div style={{fontSize:10,color:T.textFaint,letterSpacing:"0.12em",textTransform:"uppercase",fontWeight:700,marginBottom:8,fontFamily:"'DM Sans',sans-serif"}}>Previous</div>
+                          <div style={{display:"flex",flexDirection:"column",gap:6}}>
                             {prior.map((p,pi)=>(
-                              <div key={pi} style={{ background:pi===0?T.accentDark:T.bgSm, border:`1px solid ${pi===0?T.accentBorder:T.bgSmBorder}`, borderRadius:10, padding:"10px 12px" }}>
-                                <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6 }}>
-                                  <span style={{ fontSize:11, fontWeight:700, color:pi===0?T.accentText:T.textFaint, textTransform:"uppercase", letterSpacing:"0.06em", fontFamily:"'DM Sans',sans-serif" }}>{pi===0?"Last Session":"2 Sessions Ago"}</span>
-                                  <span style={{ fontSize:11, color:T.textVeryFaint, fontFamily:"'DM Sans',sans-serif" }}>{formatDate(p.date)}</span>
+                              <div key={pi} style={{background:pi===0?T.accentDark:T.bgSm,border:"1px solid "+(pi===0?T.accentBorder:T.bgSmBorder),borderRadius:10,padding:"10px 12px"}}>
+                                <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
+                                  <span style={{fontSize:11,fontWeight:700,color:pi===0?T.accentText:T.textFaint,textTransform:"uppercase",letterSpacing:"0.06em",fontFamily:"'DM Sans',sans-serif"}}>{pi===0?"Last Session":"2 Sessions Ago"}</span>
+                                  <span style={{fontSize:11,color:T.textVeryFaint,fontFamily:"'DM Sans',sans-serif"}}>{fmtDate(p.date)}</span>
                                 </div>
-                                <div style={{ background:effectiveDark?"rgba(0,0,0,0.25)":"rgba(0,0,0,0.05)", borderRadius:6, padding:"4px 12px", fontFamily:"'DM Mono',monospace", fontSize:13, display:"inline-block" }}>
-                                  <span style={{ color:T.textMuted }}>{p.setCount} sets · </span>
-                                  <span style={{ color:T.textPrimary, fontWeight:600 }}>{p.avgWeight}</span>
-                                  <span style={{ color:T.textFaint, fontSize:11 }}> lbs</span>
-                                  <span style={{ color:T.textFaint, margin:"0 4px" }}>×</span>
-                                  <span style={{ color:T.textPrimary, fontWeight:600 }}>{p.avgReps}</span>
-                                  <span style={{ color:T.textFaint, fontSize:11 }}> reps</span>
+                                <div style={{fontFamily:"'DM Mono',monospace",fontSize:13,color:T.textPrimary}}>
+                                  <span style={{color:T.textMuted}}>{p.setCount} sets - </span>
+                                  <span style={{fontWeight:600}}>{p.avgWeight} lbs</span>
+                                  <span style={{color:T.textFaint}}> x </span>
+                                  <span style={{fontWeight:600}}>{p.avgReps} reps avg</span>
                                 </div>
                               </div>
                             ))}
                           </div>
-                          <div style={div_} />
+                          <div style={divL}/>
                         </div>
                       )}
-                      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 32px", gap:8, marginBottom:8 }}>
-                        <div style={{ fontSize:11, color:T.textFaint, textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:"'DM Sans',sans-serif" }}>Weight (lbs)</div>
-                        <div style={{ fontSize:11, color:T.textFaint, textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:"'DM Sans',sans-serif" }}>Reps</div>
-                        <div />
+                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 32px",gap:8,marginBottom:8}}>
+                        <div style={{fontSize:11,color:T.textFaint,textTransform:"uppercase",letterSpacing:"0.08em",fontFamily:"'DM Sans',sans-serif"}}>Weight (lbs)</div>
+                        <div style={{fontSize:11,color:T.textFaint,textTransform:"uppercase",letterSpacing:"0.08em",fontFamily:"'DM Sans',sans-serif"}}>Reps</div>
+                        <div/>
                       </div>
-                      {ex.sets.map((set,si)=>(
-                        <div key={si} style={{ display:"grid", gridTemplateColumns:"1fr 1fr 32px", gap:8, marginBottom:8 }}>
-                          <input style={input} type="number" placeholder="135" value={set.weight} onChange={e=>updateSet(ei,si,"weight",e.target.value)} />
-                          <input style={input} type="number" placeholder="8"   value={set.reps}
-                            onChange={e=>updateSet(ei,si,"reps",e.target.value)}
-                            onBlur={e=>{ if(e.target.value) startRestTimer(restInterval); }}
-                          />
-                          <button style={{ background:T.dangerDim, border:"none", borderRadius:6, color:T.danger, cursor:"pointer", fontSize:14 }} onClick={()=>removeSet(ei,si)}>×</button>
+                      {ex.sets.map((s,si)=>(
+                        <div key={si} style={{display:"grid",gridTemplateColumns:"1fr 1fr 32px",gap:8,marginBottom:8}}>
+                          <input style={inp} type="number" placeholder="135" value={s.weight} onChange={e=>updSet(ei,si,"weight",e.target.value)}/>
+                          <input style={inp} type="number" placeholder="8" value={s.reps}
+                            onChange={e=>updSet(ei,si,"reps",e.target.value)}
+                            onBlur={e=>{if(e.target.value)startRest(restSecs);}}/>
+                          <button style={{background:T.dangerDim,border:"none",borderRadius:6,color:T.danger,cursor:"pointer",fontSize:14}} onClick={()=>removeSet(ei,si)}>x</button>
                         </div>
                       ))}
-                      <button style={{ ...btn("sm"), marginTop:4, width:"100%", textAlign:"center" }} onClick={()=>addSet(ei)}>+ Set</button>
+                      <button style={{...btn("sm"),marginTop:4,width:"100%",textAlign:"center"}} onClick={()=>addSet(ei)}>+ Set</button>
                     </div>
                   );
                 })}
 
-                {/* Rest interval setting */}
-                {exercises.length>0 && (
-                  <div style={{ marginTop:16 }}>
-                    <div style={{ fontSize:11, letterSpacing:"0.12em", textTransform:"uppercase", color:T.textFaint, marginBottom:10, fontWeight:600, fontFamily:"'DM Sans',sans-serif" }}>
-                      Rest Interval — auto-starts after each set
-                    </div>
-                    <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
+                {exercises.length>0&&(
+                  <div style={{marginBottom:16}}>
+                    <div style={lbl}>Rest Interval</div>
+                    <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
                       {REST_PRESETS.map(s=>(
-                        <button key={s} onClick={()=>setRestInterval(s)} style={{
-                          padding:"7px 14px", borderRadius:20, border:"none", cursor:"pointer",
-                          fontSize:12, fontWeight:600, fontFamily:"'DM Sans',sans-serif", transition:"all 0.15s",
-                          background: restInterval===s ? T.accent : T.bgSm,
-                          color: restInterval===s ? "#fff" : T.textMuted,
-                        }}>{s < 60 ? `${s}s` : `${s/60}m`}</button>
+                        <button key={s} onClick={()=>setRestSecs(s)} style={{padding:"7px 14px",borderRadius:20,border:"none",cursor:"pointer",fontSize:12,fontWeight:600,fontFamily:"'DM Sans',sans-serif",background:restSecs===s?T.accent:T.bgSm,color:restSecs===s?"#fff":T.textMuted}}>
+                          {s<60?s+"s":s/60+"m"}
+                        </button>
                       ))}
                     </div>
                   </div>
                 )}
-                <div style={{ display:"flex", gap:10, marginTop:20 }}>
-                  <button style={{ ...btn("secondary"), flex:1 }} onClick={resetLog}>Cancel</button>
-                  <button style={{ ...btn("primary"), flex:2, opacity:exercises.length===0?0.4:1 }} onClick={finishWorkout} disabled={exercises.length===0}>Finish Workout</button>
+
+                <div style={{display:"flex",gap:10,marginTop:20}}>
+                  <button style={{...btn("sec"),flex:1}} onClick={resetLog}>Cancel</button>
+                  <button style={{...btn("primary"),flex:2,opacity:exercises.length===0?0.4:1}} disabled={exercises.length===0} onClick={finishWorkout}>Finish Workout</button>
                 </div>
               </div>
             )}
 
-            {logStep==="details" && workoutType==="cardio" && (
+            {/* Cardio logging */}
+            {logStep==="details"&&wType==="cardio"&&(
               <div>
-                <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:20, background:T.cardioDim, border:`1px solid ${T.cardio}40`, borderRadius:12, padding:"12px 16px" }}>
-                  <div style={{ fontSize:12, color:T.cardioText, fontWeight:600, letterSpacing:"0.1em", textTransform:"uppercase", fontFamily:"'DM Sans',sans-serif" }}>Active</div>
-                  <div style={{ fontSize:22, fontFamily:"'DM Mono',monospace", color:T.cardio, fontWeight:500 }}>{timerDisplay}</div>
+                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:20,background:T.cardioDim,border:"1px solid "+T.cardio+"40",borderRadius:12,padding:"12px 16px"}}>
+                  <div style={{fontSize:12,color:T.cardioText,fontWeight:600,letterSpacing:"0.1em",textTransform:"uppercase",fontFamily:"'DM Sans',sans-serif"}}>Active</div>
+                  <div style={{fontSize:22,fontFamily:"'DM Mono',monospace",color:T.cardio,fontWeight:500}}>{timerDisp}</div>
                 </div>
-                <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
+                <div style={{display:"flex",flexDirection:"column",gap:14}}>
                   <div><div style={lbl}>Activity</div>
                     <select style={sel} value={cardioType} onChange={e=>setCardioType(e.target.value)}>
                       {CARDIO_TYPES.map(t=><option key={t}>{t}</option>)}
                     </select>
                   </div>
-                  <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
-                    <div><div style={lbl}>Distance (mi)</div><input style={input} type="number" step="0.1" placeholder="3.1" value={cardioDistance} onChange={e=>setCardioDistance(e.target.value)} /></div>
-                    <div><div style={lbl}>Duration (min)</div><input style={input} type="number" placeholder="30" value={cardioDuration} onChange={e=>setCardioDuration(e.target.value)} /></div>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+                    <div><div style={lbl}>Distance (mi)</div><input style={inp} type="number" step="0.1" placeholder="3.1" value={cardioDist} onChange={e=>setCardioDist(e.target.value)}/></div>
+                    <div><div style={lbl}>Duration (min)</div><input style={inp} type="number" placeholder="30" value={cardioDur} onChange={e=>setCardioDur(e.target.value)}/></div>
                   </div>
-                  <div><div style={lbl}>Notes</div><textarea style={{ ...input, resize:"vertical", minHeight:72 }} placeholder="Avg pace, route, how it felt..." value={cardioNotes} onChange={e=>setCardioNotes(e.target.value)} /></div>
-                  <IntensityPicker T={T} value={intensity} onChange={setIntensity} />
+                  <div><div style={lbl}>Notes</div><textarea style={{...inp,resize:"vertical",minHeight:72}} placeholder="Avg pace, route, how it felt..." value={cardioNotes} onChange={e=>setCardioNotes(e.target.value)}/></div>
+                  <div>
+                    <div style={lbl}>Intensity</div>
+                    <div style={{display:"flex",gap:8}}>
+                      {["light","moderate","hard"].map(v=>(
+                        <button key={v} onClick={()=>setIntensity(v)} style={{flex:1,padding:"10px 0",borderRadius:10,border:"none",cursor:"pointer",fontWeight:600,fontSize:13,fontFamily:"'DM Sans',sans-serif",textTransform:"capitalize",background:intensity===v?T.accent:T.bgSm,color:intensity===v?"#fff":T.textMuted}}>{v}</button>
+                      ))}
+                    </div>
+                  </div>
                 </div>
-                <div style={{ display:"flex", gap:10, marginTop:20 }}>
-                  <button style={{ ...btn("secondary"), flex:1 }} onClick={resetLog}>Cancel</button>
-                  <button style={{ ...btn("primary"), flex:2 }} onClick={finishWorkout}>Finish Workout</button>
+                <div style={{display:"flex",gap:10,marginTop:20}}>
+                  <button style={{...btn("sec"),flex:1}} onClick={resetLog}>Cancel</button>
+                  <button style={{...btn("primary"),flex:2}} onClick={finishWorkout}>Finish Workout</button>
                 </div>
               </div>
             )}
 
-            {logStep==="complete" && (()=>{
-              const last = workouts[0];
-              const cal  = last?.calories;
+            {/* Complete */}
+            {logStep==="complete"&&(()=>{
+              const w=workouts[0];
               return (
-                <div style={{ textAlign:"center", padding:"48px 0" }}>
-                  <div style={{ fontSize:64, marginBottom:16 }}>🎉</div>
-                  <div style={{ fontSize:26, fontWeight:700, marginBottom:16, color:T.textPrimary }}>Workout Saved!</div>
-                  {cal ? (
-                    <div style={{ display:"inline-block", background:T.accentDark, border:`1px solid ${T.accentBorder}`, borderRadius:14, padding:"14px 32px", marginBottom:28 }}>
-                      <div style={{ fontSize:11, color:T.accentText, letterSpacing:"0.12em", textTransform:"uppercase", fontWeight:700, marginBottom:6, fontFamily:"'DM Sans',sans-serif" }}>Est. Calories Burned</div>
-                      <div style={{ fontSize:34, fontWeight:700, fontFamily:"'DM Mono',monospace", color:T.textPrimary }}>{cal.low}–{cal.high}</div>
-                      <div style={{ fontSize:12, color:T.textFaint, marginTop:4, fontFamily:"'DM Sans',sans-serif" }}>
-                        kcal · {last.intensity} intensity {last.type==="strength" && <span style={{ color:T.textVeryFaint }}>· auto-detected</span>}
-                      </div>
+                <div style={{textAlign:"center",padding:"48px 0"}}>
+                  <div style={{fontSize:64,marginBottom:16}}>Done!</div>
+                  <div style={{fontSize:26,fontWeight:700,marginBottom:16,color:T.textPrimary}}>Workout Saved</div>
+                  {w?.calories?(
+                    <div style={{display:"inline-block",background:T.accentDark,border:"1px solid "+T.accentBorder,borderRadius:14,padding:"14px 32px",marginBottom:28}}>
+                      <div style={{fontSize:11,color:T.accentText,letterSpacing:"0.12em",textTransform:"uppercase",fontWeight:700,marginBottom:6,fontFamily:"'DM Sans',sans-serif"}}>Est. Calories Burned</div>
+                      <div style={{fontSize:34,fontWeight:700,fontFamily:"'DM Mono',monospace",color:T.textPrimary}}>{w.calories.low}-{w.calories.high}</div>
+                      <div style={{fontSize:12,color:T.textFaint,marginTop:4,fontFamily:"'DM Sans',sans-serif"}}>kcal - {w.intensity} intensity</div>
                     </div>
-                  ) : (
-                    <div style={{ color:T.textFaint, fontSize:13, marginBottom:28, fontFamily:"'DM Sans',sans-serif" }}>
-                      Log your body weight in the{" "}
-                      <span style={{ color:T.accentText, cursor:"pointer" }} onClick={()=>{ resetLog(); setView("body"); }}>Body tab</span>
-                      {" "}to see calorie estimates.
-                    </div>
+                  ):(
+                    <div style={{color:T.textFaint,fontSize:13,marginBottom:28,fontFamily:"'DM Sans',sans-serif"}}>Add body weight in Body tab to see calorie estimates.</div>
                   )}
-                  <div style={{ display:"flex", gap:10, justifyContent:"center" }}>
-                    <button style={btn("secondary")} onClick={()=>{ setLogStep("type"); setView("history"); }}>View History</button>
-                    <button style={btn("primary")} onClick={resetLog}>Done</button>
-                  </div>
+                  <button style={btn("primary")} onClick={resetLog}>Done</button>
                 </div>
               );
             })()}
-          </div>
-        )}
 
-        {/* ── HISTORY ── */}
-        {view==="history" && (
-          <div>
-            {/* View toggle */}
-            <div style={{ display:"flex", gap:6, marginBottom:20, background:T.bgSm, borderRadius:12, padding:4 }}>
-              {[["sessions","Sessions"],["exercises","Exercises"],["muscles","Muscles"]].map(([id,label])=>(
-                <button key={id} onClick={()=>setHistoryView(id)} style={{
-                  flex:1, padding:"8px 0", borderRadius:9, border:"none", cursor:"pointer",
-                  fontSize:12, fontWeight:600, fontFamily:"'DM Sans',sans-serif", transition:"all 0.15s",
-                  background: historyView===id ? T.bgCard : "transparent",
-                  color: historyView===id ? T.textPrimary : T.textFaint,
-                  boxShadow: historyView===id ? "0 1px 4px rgba(0,0,0,0.12)" : "none",
-                }}>{label}</button>
-              ))}
-            </div>
+            {/* Type selector + history */}
+            {logStep==="type"&&(
+              <div>
+                {/* Start activity */}
+                <div style={{marginBottom:24}}>
+                  <div style={lbl}>Start Activity</div>
+                  <div style={{display:"flex",gap:10}}>
+                    <button style={{...btn("sec"),flex:1,padding:"16px 12px",borderRadius:14,display:"flex",flexDirection:"column",alignItems:"center",gap:10}} onClick={()=>startWorkout("strength")}>
+                      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke={T.textMuted} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M6.5 6.5h11"/><path d="M6.5 17.5h11"/><path d="M3 9.5h2v5H3z"/><path d="M19 9.5h2v5h-2z"/><path d="M6.5 12h11"/>
+                      </svg>
+                      <span style={{fontSize:13,fontWeight:600}}>Strength</span>
+                    </button>
+                    <button style={{...btn("sec"),flex:1,padding:"16px 12px",borderRadius:14,display:"flex",flexDirection:"column",alignItems:"center",gap:10}} onClick={()=>startWorkout("cardio")}>
+                      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke={T.textMuted} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                        <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+                      </svg>
+                      <span style={{fontSize:13,fontWeight:600}}>Cardio</span>
+                    </button>
+                  </div>
+                  </div>
+                </div>
 
-            {/* ── SESSIONS VIEW ── */}
-            {historyView==="sessions" && (()=>{
-              // Group by week
-              const getWeekKey = (iso) => {
-                const d = new Date(iso);
-                const startOfWeek = new Date(d);
-                startOfWeek.setDate(d.getDate() - d.getDay());
-                return startOfWeek.toDateString();
-              };
-              const weeks = {};
-              workouts.forEach(w => {
-                const k = getWeekKey(w.date);
-                if (!weeks[k]) weeks[k] = { key:k, date: new Date(k), workouts:[] };
-                weeks[k].workouts.push(w);
-              });
-              const weekList = Object.values(weeks).sort((a,b)=>b.date-a.date);
-
-              // Type filter chips
-              const filtered = (list) => historyFilter==="all" ? list : list.filter(w=>w.type===historyFilter);
-
-              return (
-                <div>
-                  <div style={{ display:"flex", gap:8, marginBottom:16 }}>
-                    {["all","strength","cardio"].map(f=>(
-                      <button key={f} style={{ ...btn("sm"), background:historyFilter===f?T.accent:T.bgSm, color:historyFilter===f?"#fff":T.textBody, border:historyFilter===f?"none":`1px solid ${T.bgSmBorder}`, textTransform:"capitalize" }}
-                        onClick={()=>setHistoryFilter(f)}>{f}</button>
+                
+                {weekCount>0&&(
+                  <div style={{display:"flex",gap:10,marginBottom:20}}>
+                    <div style={{...card,flex:1,marginBottom:0,padding:"12px 14px"}}><div style={{fontSize:10,color:T.textFaint,textTransform:"uppercase",letterSpacing:"0.1em",fontFamily:"DM Sans",fontWeight:600,marginBottom:4}}>Sessions</div><div style={{fontSize:18,fontWeight:700,fontFamily:"DM Mono",color:T.textPrimary}}>{weekCount}</div></div>
+                    <div style={{...card,flex:1,marginBottom:0,padding:"12px 14px"}}><div style={{fontSize:10,color:T.textFaint,textTransform:"uppercase",letterSpacing:"0.1em",fontFamily:"DM Sans",fontWeight:600,marginBottom:4}}>Time</div><div style={{fontSize:18,fontWeight:700,fontFamily:"DM Mono",color:T.textPrimary}}>{fmtDur(weekMins)}</div></div>
+                    <div style={{...card,flex:1,marginBottom:0,padding:"12px 14px"}}><div style={{fontSize:10,color:T.textFaint,textTransform:"uppercase",letterSpacing:"0.1em",fontFamily:"DM Sans",fontWeight:600,marginBottom:4}}>Sets</div><div style={{fontSize:18,fontWeight:700,fontFamily:"DM Mono",color:T.textPrimary}}>{weekSets}</div></div>
+                      <div key={l} style={{...card,flex:1,marginBottom:0,padding:"12px 14px"}}>
+                        <div style={{fontSize:10,color:T.textFaint,textTransform:"uppercase",letterSpacing:"0.1em",fontFamily:"'DM Sans',sans-serif",fontWeight:600,marginBottom:4}}>{l}</div>
+                        <div style={{fontSize:18,fontWeight:700,fontFamily:"'DM Mono',monospace",color:T.textPrimary}}>{v}</div>
+                      </div>
                     ))}
                   </div>
+                )}
 
-                  {weekList.length===0 && <div style={{ color:T.textFaint, fontSize:14, textAlign:"center", padding:"40px 0", fontFamily:"'DM Sans',sans-serif" }}>No sessions logged yet.</div>}
+                {/* Sub-view tabs */}
+                <div style={{display:"flex",gap:6,marginBottom:16,background:T.bgSm,borderRadius:12,padding:4}}>
+                  {[["sessions","Sessions"],["exercises","Exercises"],["muscles","Muscles"]].map(([id,label])=>(
+                    <button key={id} onClick={()=>setHistTab(id)} style={{flex:1,padding:"8px 0",borderRadius:9,border:"none",cursor:"pointer",fontSize:12,fontWeight:600,fontFamily:"'DM Sans',sans-serif",background:histTab===id?T.bgCard:"transparent",color:histTab===id?T.textPrimary:T.textFaint,boxShadow:histTab===id?"0 1px 4px rgba(0,0,0,0.12)":"none"}}>{label}</button>
+                  ))}
+                </div>
 
-                  {weekList.map(week=>{
-                    const weekWorkouts = filtered(week.workouts);
-                    if (!weekWorkouts.length) return null;
-                    const weekMins = weekWorkouts.reduce((s,w)=>s+(w.duration||0),0);
-                    const weekSessions = weekWorkouts.length;
-                    const muscleSet = [...new Set(weekWorkouts.flatMap(w=>w.muscleGroups||[]))];
-                    const weekStart = week.date;
-                    const weekEnd = new Date(weekStart); weekEnd.setDate(weekStart.getDate()+6);
-                    const isThisWeek = (now - weekStart) / 86400000 <= 7;
-
-                    return (
-                      <div key={week.key} style={{ marginBottom:24 }}>
-                        {/* Week header */}
-                        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 }}>
-                          <div>
-                            <div style={{ fontSize:13, fontWeight:700, color:T.textPrimary, fontFamily:"'DM Sans',sans-serif" }}>
-                              {isThisWeek ? "This Week" : `${formatShortDate(weekStart.toISOString())} – ${formatShortDate(weekEnd.toISOString())}`}
-                            </div>
-                            <div style={{ fontSize:11, color:T.textFaint, fontFamily:"'DM Sans',sans-serif", marginTop:2 }}>
-                              {weekSessions} session{weekSessions!==1?"s":""} · {formatDuration(weekMins)}
-                              {muscleSet.length>0 && ` · ${muscleSet.slice(0,3).join(", ")}`}
-                            </div>
-                          </div>
-                          {isThisWeek && <span style={{ fontSize:10, background:T.accentDim, color:T.accentText, borderRadius:10, padding:"2px 8px", fontFamily:"'DM Sans',sans-serif", fontWeight:600 }}>Current</span>}
-                        </div>
-
-                        {weekWorkouts.map(w=>(
-                          <div key={w.id} style={card}>
-                            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:6 }}>
-                              <div>
-                                <div style={{ fontWeight:600, fontSize:15, color:T.textPrimary }}>{w.type==="strength"?(w.muscleGroups?.length?w.muscleGroups.join(" + "):"Strength"):w.cardioType}</div>
-                                <div style={{ fontSize:12, color:T.textFaint, marginTop:2, fontFamily:"'DM Sans',sans-serif" }}>{formatDate(w.date)} · {formatDuration(w.duration)}</div>
-                              </div>
-                              <span style={tag(w.type)}>{w.type}</span>
-                            </div>
-                            {w.type==="strength" && w.exercises?.map((ex,i)=>(
-                              <div key={i} style={{ marginTop:8, paddingTop:8, borderTop:i===0?`1px solid ${T.divider}`:"none" }}>
-                                <div style={{ fontSize:13, fontWeight:600, color:T.textBody, marginBottom:3 }}>{ex.name}</div>
-                                <div style={{ fontSize:12, color:T.textFaint, fontFamily:"'DM Sans',sans-serif" }}>{ex.sets.map(s=>`${s.weight?s.weight+" lbs":"BW"} × ${s.reps||"—"}`).join("  ·  ")}</div>
-                              </div>
-                            ))}
-                            {w.type==="cardio" && (
-                              <div style={{ fontSize:13, color:T.textMuted, marginTop:4, fontFamily:"'DM Sans',sans-serif" }}>
-                                {w.distance?`${w.distance} mi · `:""}{formatDuration(w.duration)}
-                                {w.distance && w.duration ? ` · ${(w.duration/w.distance).toFixed(1)} min/mi` : ""}
-                                {w.notes && <div style={{ marginTop:4, fontSize:12, color:T.textFaint }}>{w.notes}</div>}
-                              </div>
-                            )}
-                            {w.calories && <div style={calBadge}><span>🔥</span><span style={{ fontFamily:"'DM Mono',monospace", fontWeight:600, fontSize:13, color:T.textPrimary }}>{w.calories.low}–{w.calories.high}</span><span style={{ fontSize:11, color:T.textFaint, fontFamily:"'DM Sans',sans-serif" }}>kcal</span></div>}
-                            <div style={div_} />
-                            <div style={{ display:"flex", gap:8 }}>
-                              <button style={{ ...btn("sm"), flex:1 }} onClick={()=>setEditingWorkout(JSON.parse(JSON.stringify(w)))}>Edit</button>
-                              {deleteConfirmId===w.id ? (
-                                <>
-                                  <button style={{ ...btn("danger"), flex:1 }} onClick={()=>{ setWorkouts(p=>p.filter(x=>x.id!==w.id)); setDeleteConfirmId(null); }}>Confirm Delete</button>
-                                  <button style={{ ...btn("secondary"), padding:"8px 12px", fontSize:13 }} onClick={()=>setDeleteConfirmId(null)}>Cancel</button>
-                                </>
-                              ) : (
-                                <button style={{ ...btn("danger"), flex:1 }} onClick={()=>setDeleteConfirmId(w.id)}>Delete</button>
-                              )}
-                            </div>
-                          </div>
+                {/* Sessions */}
+                {histTab==="sessions"&&(()=>{
+                  const dayMap = {};
+                  workouts.forEach(w=>{
+                    const dk=new Date(w.date).toDateString();
+                    if(!dayMap[dk]) dayMap[dk]={date:new Date(w.date),ws:[]};
+                    dayMap[dk].ws.push(w);
+                  });
+                  const dayList=Object.values(dayMap).sort((a,b)=>b.date-a.date);
+                  const filtered=list=>histFilter==="all"?list:list.filter(w=>w.type===histFilter);
+                  return (
+                    <div>
+                      <div style={{display:"flex",gap:8,marginBottom:16}}>
+                        {["all","strength","cardio"].map(f=>(
+                          <button key={f} style={{...btn("sm"),background:histFilter===f?T.accent:T.bgSm,color:histFilter===f?"#fff":T.textBody,border:histFilter===f?"none":"1px solid "+T.bgSmBorder,textTransform:"capitalize"}} onClick={()=>setHistFilter(f)}>{f}</button>
                         ))}
                       </div>
-                    );
-                  })}
-                </div>
-              );
-            })()}
-
-            {/* ── EXERCISES VIEW ── */}
-            {historyView==="exercises" && (()=>{
-              const allExNames = [...new Set(strengthWorkouts.flatMap(w=>(w.exercises||[]).map(e=>e.name)))].sort();
-              const filtered = historyExSearch ? allExNames.filter(n=>n.toLowerCase().includes(historyExSearch.toLowerCase())) : allExNames;
-
-              // Build chart data for selected exercise
-              const exHistory = historyExercise ? strengthWorkouts
-                .filter(w=>w.exercises?.some(e=>e.name===historyExercise))
-                .map(w=>{
-                  const ex = w.exercises.find(e=>e.name===historyExercise);
-                  const valid = ex.sets.filter(s=>parseFloat(s.weight)>0);
-                  const maxW = valid.length ? Math.max(...valid.map(s=>parseFloat(s.weight))) : 0;
-                  const avgR = valid.length ? Math.round(valid.reduce((s,x)=>s+parseFloat(x.reps||0),0)/valid.length) : 0;
-                  const totalSets = valid.length;
-                  return { date:w.date, maxWeight:maxW, avgReps:avgR, totalSets };
-                }).filter(d=>d.maxWeight>0).reverse() : [];
-
-              const chartMax = exHistory.length ? Math.max(...exHistory.map(d=>d.maxWeight)) : 0;
-              const chartMin = exHistory.length ? Math.min(...exHistory.map(d=>d.maxWeight)) : 0;
-              const chartRange = chartMax - chartMin || 1;
-              const cW=300, cH=100;
-              const pts = exHistory.map((d,i)=>({
-                x: exHistory.length===1 ? cW/2 : (i/(exHistory.length-1))*cW,
-                y: cH - ((d.maxWeight-chartMin)/chartRange)*(cH-16) - 8,
-                ...d,
-              }));
-              const chartPath = pts.map((p,i)=>`${i===0?"M":"L"} ${p.x} ${p.y}`).join(" ");
-
-              return (
-                <div>
-                  {/* Search */}
-                  <input style={{ ...input, marginBottom:12 }} placeholder="Search exercises…" value={historyExSearch}
-                    onChange={e=>{ setHistoryExSearch(e.target.value); setHistoryExercise(""); }} />
-
-                  {allExNames.length===0 && <div style={{ color:T.textFaint, fontSize:14, textAlign:"center", padding:"40px 0", fontFamily:"'DM Sans',sans-serif" }}>Log some strength sessions to see exercise history.</div>}
-
-                  {/* Exercise list */}
-                  {!historyExercise && (
-                    <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
-                      {filtered.map(name=>{
-                        const sessions = strengthWorkouts.filter(w=>w.exercises?.some(e=>e.name===name));
-                        const allWeights = sessions.flatMap(w=>w.exercises.find(e=>e.name===name)?.sets.map(s=>parseFloat(s.weight)||0)||[]);
-                        const maxW = allWeights.length ? Math.max(...allWeights) : 0;
+                      {dayList.length===0&&<div style={{color:T.textFaint,fontSize:14,textAlign:"center",padding:"40px 0",fontFamily:"'DM Sans',sans-serif"}}>No sessions yet. Start one above!</div>}
+                      {dayList.map(day=>{
+                        const dw=filtered(day.ws);
+                        if(!dw.length) return null;
+                        const dk=day.date.toDateString();
+                        const tod=new Date().toDateString();
+                        const yes=new Date(Date.now()-86400000).toDateString();
+                        const dlabel=dk===tod?"Today":dk===yes?"Yesterday":day.date.toLocaleDateString("en-US",{weekday:"short",month:"short",day:"numeric"});
                         return (
-                          <div key={name} onClick={()=>{ setHistoryExercise(name); setHistoryExSearch(""); }} style={{ ...card, marginBottom:0, cursor:"pointer", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-                            <div>
-                              <div style={{ fontSize:14, fontWeight:600, color:T.textPrimary, fontFamily:"'DM Sans',sans-serif" }}>{name}</div>
-                              <div style={{ fontSize:11, color:T.textFaint, fontFamily:"'DM Sans',sans-serif", marginTop:2 }}>{sessions.length} session{sessions.length!==1?"s":""}</div>
+                          <div key={dk} style={{marginBottom:20}}>
+                            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8,paddingBottom:8,borderBottom:"1px solid "+T.divider}}>
+                              <div style={{fontSize:14,fontWeight:700,color:T.textPrimary,fontFamily:"'DM Sans',sans-serif"}}>{dlabel}</div>
+                              <div style={{fontSize:11,color:T.textFaint,fontFamily:"'DM Sans',sans-serif"}}>{dw.length} session{dw.length!==1?"s":""} - {fmtDur(dw.reduce((a,w)=>a+(w.duration||0),0))}</div>
                             </div>
-                            <div style={{ textAlign:"right" }}>
-                              {maxW > 0 && <div style={{ fontFamily:"'DM Mono',monospace", fontWeight:700, fontSize:16, color:T.accent }}>{maxW} <span style={{ fontSize:11, color:T.textFaint }}>lbs PR</span></div>}
-                              <div style={{ fontSize:12, color:T.textFaint, fontFamily:"'DM Sans',sans-serif" }}>›</div>
-                            </div>
+                            {dw.map(w=>(
+                              <div key={w.id} style={{...card,marginBottom:8}}>
+                                <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:6}}>
+                                  <div>
+                                    <div style={{fontWeight:600,fontSize:15,color:T.textPrimary}}>{w.type==="strength"?(w.muscleGroups?.length?w.muscleGroups.join(" + "):"Strength"):w.cardioType}</div>
+                                    <div style={{fontSize:12,color:T.textFaint,marginTop:2,fontFamily:"'DM Sans',sans-serif"}}>{fmtDur(w.duration)}{w.type==="cardio"&&w.distance?" - "+w.distance+" mi":""}</div>
+                                  </div>
+                                  <span style={tag(w.type)}>{w.type}</span>
+                                </div>
+                                {w.type==="strength"&&w.exercises?.length>0&&<div style={{fontSize:12,color:T.textMuted,fontFamily:"'DM Sans',sans-serif",marginBottom:6}}>{w.exercises.map(e=>e.name).join(" - ")}</div>}
+                                {w.type==="cardio"&&w.distance&&w.duration&&<div style={{fontSize:12,color:T.textMuted,fontFamily:"'DM Sans',sans-serif",marginBottom:6}}>{(w.duration/w.distance).toFixed(1)} min/mi</div>}
+                                {w.calories&&<div style={calB}><span style={{fontFamily:"'DM Mono',monospace",fontWeight:600,fontSize:12,color:T.textPrimary}}>{w.calories.low}-{w.calories.high}</span><span style={{fontSize:11,color:T.textFaint,fontFamily:"'DM Sans',sans-serif"}}> kcal</span></div>}
+                                <div style={divL}/>
+                                <div style={{display:"flex",gap:8}}>
+                                  <button style={{...btn("sm"),flex:1}} onClick={()=>setEditW(JSON.parse(JSON.stringify(w)))}>Edit</button>
+                                  {delConfirm===w.id?(
+                                    <>
+                                      <button style={{...btn("danger"),flex:1}} onClick={()=>{setWorkouts(p=>p.filter(x=>x.id!==w.id));setDelConfirm(null);}}>Confirm</button>
+                                      <button style={{...btn("sm")}} onClick={()=>setDelConfirm(null)}>Cancel</button>
+                                    </>
+                                  ):<button style={{...btn("danger"),flex:1}} onClick={()=>setDelConfirm(w.id)}>Delete</button>}
+                                </div>
+                              </div>
+                            ))}
                           </div>
                         );
                       })}
                     </div>
-                  )}
+                  );
+                })()}
 
-                  {/* Exercise detail + chart */}
-                  {historyExercise && (
+                {/* Exercises */}
+                {histTab==="exercises"&&(
+                  <div>
+                    <input style={{...inp,marginBottom:12}} placeholder="Search exercises..." value={histExSearch} onChange={e=>{setHistExSearch(e.target.value);setHistEx("");}}/>
+                    {allExNames.length===0&&<div style={{color:T.textFaint,fontSize:14,textAlign:"center",padding:"40px 0",fontFamily:"'DM Sans',sans-serif"}}>Log strength sessions to see exercise history.</div>}
+                    {!histEx&&filtExNames.map(name=>{
+                      const ss=strengthW.filter(w=>w.exercises?.some(e=>e.name===name));
+                      const ws=ss.flatMap(w=>w.exercises.find(e=>e.name===name)?.sets.map(s=>parseFloat(s.weight)||0)||[]);
+                      const maxW=ws.length?Math.max(...ws):0;
+                      return (
+                        <div key={name} onClick={()=>{setHistEx(name);setHistExSearch("");}} style={{...card,cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                          <div>
+                            <div style={{fontSize:14,fontWeight:600,color:T.textPrimary,fontFamily:"'DM Sans',sans-serif"}}>{name}</div>
+                            <div style={{fontSize:11,color:T.textFaint,fontFamily:"'DM Sans',sans-serif",marginTop:2}}>{ss.length} session{ss.length!==1?"s":""}</div>
+                          </div>
+                          <div style={{textAlign:"right"}}>
+                            {maxW>0&&<div style={{fontFamily:"'DM Mono',monospace",fontWeight:700,fontSize:16,color:T.accent}}>{maxW} <span style={{fontSize:11,color:T.textFaint}}>lbs PR</span></div>}
+                            <div style={{fontSize:12,color:T.textFaint}}>{">"}</div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {histEx&&(
+                      <div>
+                        <button onClick={()=>setHistEx("")} style={{...btn("sm"),marginBottom:16}}>Back</button>
+                        <div style={{fontSize:20,fontWeight:700,color:T.textPrimary,marginBottom:16}}>{histEx}</div>
+                        {exHist.length>=2&&(
+                          <div style={{...card,marginBottom:16}}>
+                            <div style={{display:"flex",gap:16,marginBottom:14}}>
+                              {[["PR",exMax+" lbs",T.accent],["Sessions",exHist.length,T.textPrimary],["Trend",exHist[exHist.length-1].maxW>=exHist[0].maxW?"Up":"Down",exHist[exHist.length-1].maxW>=exHist[0].maxW?T.accent:T.danger]].map(([l,v,c])=>(
+                                <div key={l}>
+                                  <div style={{fontSize:10,color:T.textFaint,textTransform:"uppercase",letterSpacing:"0.1em",fontFamily:"'DM Sans',sans-serif",fontWeight:600}}>{l}</div>
+                                  <div style={{fontSize:22,fontWeight:700,fontFamily:"'DM Mono',monospace",color:c}}>{v}</div>
+                                </div>
+                              ))}
+                            </div>
+                            <svg width="100%" viewBox={"0 0 "+cW+" "+cH} style={{overflow:"visible"}}>
+                              <defs><linearGradient id="exGrd" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={T.accent} stopOpacity="0.25"/><stop offset="100%" stopColor={T.accent} stopOpacity="0"/></linearGradient></defs>
+                              <path d={exPath+" L "+exPts[exPts.length-1].x+" "+cH+" L "+exPts[0].x+" "+cH+" Z"} fill="url(#exGrd)"/>
+                              <path d={exPath} fill="none" stroke={T.accent} strokeWidth="2" strokeLinejoin="round"/>
+                              {exPts.map((p,i)=><g key={i}><circle cx={p.x} cy={p.y} r="4" fill={p.maxW===exMax?"#fff":T.accent} stroke={T.accent} strokeWidth="2"/><text x={p.x} y={p.y-10} fill={T.textMuted} fontSize="9" textAnchor="middle">{p.maxW}</text></g>)}
+                            </svg>
+                          </div>
+                        )}
+                        <div style={lbl}>All Sessions</div>
+                        {[...exHist].reverse().map((d,i)=>(
+                          <div key={i} style={{...card,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                            <div>
+                              <div style={{fontSize:13,color:T.textBody,fontFamily:"'DM Sans',sans-serif",fontWeight:500}}>{fmtDate(d.date)}</div>
+                              <div style={{fontSize:11,color:T.textFaint,fontFamily:"'DM Sans',sans-serif",marginTop:2}}>{d.sets} sets - avg {d.avgR} reps</div>
+                            </div>
+                            <div style={{fontFamily:"'DM Mono',monospace",fontWeight:700,fontSize:16,color:d.maxW===exMax?T.accent:T.textPrimary}}>{d.maxW} lbs{d.maxW===exMax?" *":""}</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Muscles */}
+                {histTab==="muscles"&&(()=>{
+                  const cutoff=now-30*86400000;
+                  const rs=strengthW.filter(w=>new Date(w.date)>=cutoff);
+                  const gs = {};
+                  MUSCLE_GROUPS.forEach(g=>{gs[g]=0;});
+                  gs["Other"]=0;
+                  rs.forEach(w=>(w.exercises||[]).forEach(ex=>{
+                    const g=EX_MAP[ex.name]||"Other";
+                    gs[g]=(gs[g]||0)+ex.sets.filter(s=>s.weight||s.reps).length;
+                  }));
+                  const disp=Object.entries(gs).filter(([g,v])=>g!=="Other"||v>0).sort((a,b)=>b[1]-a[1]);
+                  const maxS=Math.max(...disp.map(([,v])=>v),1);
+                  const totS=disp.reduce((a,[,v])=>a+v,0);
+                  const push=(gs["Chest"]||0)+(gs["Shoulders"]||0)+(gs["Triceps"]||0);
+                  const pull=(gs["Back"]||0)+(gs["Biceps"]||0);
+                  const upper=push+pull+(gs["Shoulders"]||0);
+                  const lower=gs["Legs"]||0;
+                  return (
                     <div>
-                      <button onClick={()=>setHistoryExercise("")} style={{ ...btn("sm"), marginBottom:16 }}>← All Exercises</button>
-                      <div style={{ fontSize:20, fontWeight:700, color:T.textPrimary, marginBottom:16 }}>{historyExercise}</div>
-
-                      {exHistory.length >= 2 && (
-                        <div style={{ ...card, marginBottom:16 }}>
-                          <div style={{ display:"flex", gap:16, marginBottom:14 }}>
-                            <div>
-                              <div style={{ fontSize:10, color:T.textFaint, textTransform:"uppercase", letterSpacing:"0.1em", fontFamily:"'DM Sans',sans-serif", fontWeight:600 }}>PR</div>
-                              <div style={{ fontSize:22, fontWeight:700, fontFamily:"'DM Mono',monospace", color:T.accent }}>{chartMax} <span style={{ fontSize:12, color:T.textFaint }}>lbs</span></div>
-                            </div>
-                            <div>
-                              <div style={{ fontSize:10, color:T.textFaint, textTransform:"uppercase", letterSpacing:"0.1em", fontFamily:"'DM Sans',sans-serif", fontWeight:600 }}>Sessions</div>
-                              <div style={{ fontSize:22, fontWeight:700, fontFamily:"'DM Mono',monospace", color:T.textPrimary }}>{exHistory.length}</div>
-                            </div>
-                            <div>
-                              <div style={{ fontSize:10, color:T.textFaint, textTransform:"uppercase", letterSpacing:"0.1em", fontFamily:"'DM Sans',sans-serif", fontWeight:600 }}>Trend</div>
-                              <div style={{ fontSize:22, fontWeight:700, fontFamily:"'DM Mono',monospace", color: exHistory[exHistory.length-1].maxWeight >= exHistory[0].maxWeight ? T.accent : T.danger }}>
-                                {exHistory[exHistory.length-1].maxWeight >= exHistory[0].maxWeight ? "↑" : "↓"}
+                      <div style={{fontSize:11,color:T.textFaint,fontFamily:"'DM Sans',sans-serif",marginBottom:20}}>Last 30 days - {totS} total sets</div>
+                      {totS===0&&<div style={{color:T.textFaint,fontSize:14,textAlign:"center",padding:"40px 0",fontFamily:"'DM Sans',sans-serif"}}>Log strength sessions to see muscle balance.</div>}
+                      {disp.map(([g,sets])=>{
+                        const pct=maxS>0?sets/maxS:0;
+                        const isLow=sets>0&&sets<maxS*0.3;
+                        const isOth=g==="Other";
+                        return (
+                          <div key={g} style={{marginBottom:12}}>
+                            <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:5}}>
+                              <div style={{display:"flex",alignItems:"center",gap:6}}>
+                                <div style={{fontSize:13,fontFamily:"'DM Sans',sans-serif",fontWeight:600,color:sets===0?T.textVeryFaint:T.textBody}}>{g}</div>
+                                {isOth&&<span style={{fontSize:10,color:T.textFaint,fontFamily:"'DM Sans',sans-serif"}}>(custom)</span>}
+                              </div>
+                              <div style={{display:"flex",alignItems:"center",gap:8}}>
+                                {isLow&&!isOth&&<span style={{fontSize:10,color:T.danger,fontFamily:"'DM Sans',sans-serif",fontWeight:600}}>Low</span>}
+                                <div style={{fontFamily:"'DM Mono',monospace",fontSize:13,fontWeight:600,color:sets===0?T.textVeryFaint:T.textPrimary}}>{sets}</div>
+                                <div style={{fontSize:11,color:T.textFaint,fontFamily:"'DM Sans',sans-serif"}}>sets</div>
                               </div>
                             </div>
-                          </div>
-                          <svg width="100%" viewBox={`0 0 ${cW} ${cH}`} style={{ overflow:"visible" }}>
-                            <defs><linearGradient id="exGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={T.accent} stopOpacity="0.25"/><stop offset="100%" stopColor={T.accent} stopOpacity="0"/></linearGradient></defs>
-                            <path d={`${chartPath} L ${pts[pts.length-1].x} ${cH} L ${pts[0].x} ${cH} Z`} fill="url(#exGrad)" />
-                            <path d={chartPath} fill="none" stroke={T.accent} strokeWidth="2" strokeLinejoin="round" />
-                            {pts.map((p,i)=><g key={i}><circle cx={p.x} cy={p.y} r="4" fill={p.maxWeight===chartMax?"#fff":T.accent} stroke={T.accent} strokeWidth="2"/><text x={p.x} y={p.y-10} fill={T.textMuted} fontSize="9" textAnchor="middle">{p.maxWeight}</text></g>)}
-                          </svg>
-                        </div>
-                      )}
-
-                      <div style={lbl}>All Sessions</div>
-                      {[...exHistory].reverse().map((d,i)=>(
-                        <div key={i} style={{ ...card, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-                          <div>
-                            <div style={{ fontSize:13, color:T.textBody, fontFamily:"'DM Sans',sans-serif", fontWeight:500 }}>{formatDate(d.date)}</div>
-                            <div style={{ fontSize:11, color:T.textFaint, fontFamily:"'DM Sans',sans-serif", marginTop:2 }}>{d.totalSets} sets · avg {d.avgReps} reps</div>
-                          </div>
-                          <div style={{ fontFamily:"'DM Mono',monospace", fontWeight:700, fontSize:16, color:d.maxWeight===chartMax?T.accent:T.textPrimary }}>
-                            {d.maxWeight} lbs {d.maxWeight===chartMax?"🏆":""}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              );
-            })()}
-
-            {/* ── MUSCLES VIEW ── */}
-            {historyView==="muscles" && (()=>{
-              // Count sets per muscle group over last 30 days
-              const cutoff = now - 30*86400000;
-              const recentStrength = strengthWorkouts.filter(w=>new Date(w.date)>=cutoff);
-              const groupSets = {};
-              MUSCLE_GROUPS.forEach(g=>{ groupSets[g]=0; });
-              recentStrength.forEach(w=>{
-                (w.exercises||[]).forEach(ex=>{
-                  const g = EXERCISE_MUSCLE_MAP[ex.name];
-                  if (g) groupSets[g] = (groupSets[g]||0) + ex.sets.filter(s=>s.weight||s.reps).length;
-                });
-              });
-
-              const maxSets = Math.max(...Object.values(groupSets), 1);
-              const sorted = Object.entries(groupSets).sort((a,b)=>b[1]-a[1]);
-              const totalSets30 = Object.values(groupSets).reduce((s,v)=>s+v,0);
-
-              // Balance score — how evenly distributed (push vs pull, upper vs lower)
-              const push = (groupSets["Chest"]||0) + (groupSets["Shoulders"]||0) + (groupSets["Triceps"]||0);
-              const pull = (groupSets["Back"]||0) + (groupSets["Biceps"]||0);
-              const upper = push + pull + (groupSets["Shoulders"]||0);
-              const lower = groupSets["Legs"]||0;
-
-              return (
-                <div>
-                  <div style={{ fontSize:11, color:T.textFaint, fontFamily:"'DM Sans',sans-serif", marginBottom:20 }}>
-                    Based on the last 30 days · {totalSets30} total sets
-                  </div>
-
-                  {totalSets30===0 && <div style={{ color:T.textFaint, fontSize:14, textAlign:"center", padding:"40px 0", fontFamily:"'DM Sans',sans-serif" }}>Log some strength sessions to see muscle balance.</div>}
-
-                  {/* Bars */}
-                  {sorted.map(([group, sets])=>{
-                    const pct = maxSets > 0 ? sets/maxSets : 0;
-                    const isLow = sets > 0 && sets < maxSets * 0.3;
-                    const barColor = sets===0 ? T.bgSm : isLow ? T.danger : T.accent;
-                    return (
-                      <div key={group} style={{ marginBottom:12 }}>
-                        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:5 }}>
-                          <div style={{ fontSize:13, fontFamily:"'DM Sans',sans-serif", fontWeight:600, color: sets===0?T.textVeryFaint:T.textBody }}>{group}</div>
-                          <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-                            {isLow && <span style={{ fontSize:10, color:T.danger, fontFamily:"'DM Sans',sans-serif", fontWeight:600 }}>Low volume</span>}
-                            {sets===0 && <span style={{ fontSize:10, color:T.textVeryFaint, fontFamily:"'DM Sans',sans-serif" }}>No sessions</span>}
-                            <div style={{ fontFamily:"'DM Mono',monospace", fontSize:13, fontWeight:600, color:sets===0?T.textVeryFaint:T.textPrimary }}>{sets}</div>
-                            <div style={{ fontSize:11, color:T.textFaint, fontFamily:"'DM Sans',sans-serif" }}>sets</div>
-                          </div>
-                        </div>
-                        <div style={{ height:8, background:T.bgSm, borderRadius:4, overflow:"hidden" }}>
-                          <div style={{ height:"100%", width:`${pct*100}%`, background:barColor, borderRadius:4, transition:"width 0.4s" }} />
-                        </div>
-                      </div>
-                    );
-                  })}
-
-                  {/* Push / Pull / Legs balance */}
-                  {totalSets30 > 0 && (
-                    <div style={{ ...card, marginTop:20 }}>
-                      <div style={lbl}>Balance Insights</div>
-                      {push > 0 && pull > 0 && (()=>{
-                        const ratio = push/pull;
-                        const balanced = ratio >= 0.8 && ratio <= 1.4;
-                        return (
-                          <div style={{ marginBottom:12 }}>
-                            <div style={{ display:"flex", justifyContent:"space-between", marginBottom:4 }}>
-                              <span style={{ fontSize:13, fontFamily:"'DM Sans',sans-serif", color:T.textBody }}>Push / Pull ratio</span>
-                              <span style={{ fontFamily:"'DM Mono',monospace", fontSize:13, fontWeight:600, color:balanced?T.accent:T.danger }}>{ratio.toFixed(1)}:1</span>
-                            </div>
-                            <div style={{ fontSize:12, color:balanced?T.textFaint:T.danger, fontFamily:"'DM Sans',sans-serif" }}>
-                              {balanced ? "Well balanced" : ratio > 1.4 ? "Too much push — add more back/bicep work" : "Too much pull — add more chest/shoulder/tricep work"}
+                            <div style={{height:8,background:T.bgSm,borderRadius:4,overflow:"hidden"}}>
+                              <div style={{height:"100%",width:(pct*100)+"%",background:sets===0?T.bgSm:isLow&&!isOth?T.danger:T.accent,borderRadius:4}}/>
                             </div>
                           </div>
                         );
-                      })()}
-                      {upper > 0 && lower > 0 && (()=>{
-                        const ratio = upper/lower;
-                        const balanced = ratio >= 0.8 && ratio <= 2.5;
-                        return (
-                          <div>
-                            <div style={{ display:"flex", justifyContent:"space-between", marginBottom:4 }}>
-                              <span style={{ fontSize:13, fontFamily:"'DM Sans',sans-serif", color:T.textBody }}>Upper / Lower ratio</span>
-                              <span style={{ fontFamily:"'DM Mono',monospace", fontSize:13, fontWeight:600, color:balanced?T.accent:T.danger }}>{ratio.toFixed(1)}:1</span>
-                            </div>
-                            <div style={{ fontSize:12, color:balanced?T.textFaint:T.danger, fontFamily:"'DM Sans',sans-serif" }}>
-                              {balanced ? "Good balance" : ratio > 2.5 ? "Skewing upper body — add more leg work" : "Heavy on legs — consider more upper body"}
-                            </div>
-                          </div>
-                        );
-                      })()}
-                      {(push===0||pull===0||upper===0||lower===0) && (
-                        <div style={{ fontSize:12, color:T.textFaint, fontFamily:"'DM Sans',sans-serif" }}>Log more sessions across muscle groups to see balance insights.</div>
+                      })}
+                      {totS>0&&(
+                        <div style={{...card,marginTop:20}}>
+                          <div style={lbl}>Balance</div>
+                          {push>0&&pull>0&&(()=>{const r=push/pull;const ok=r>=0.8&&r<=1.4;return(<div style={{marginBottom:12}}><div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}><span style={{fontSize:13,fontFamily:"'DM Sans',sans-serif",color:T.textBody}}>Push / Pull</span><span style={{fontFamily:"'DM Mono',monospace",fontSize:13,fontWeight:600,color:ok?T.accent:T.danger}}>{r.toFixed(1)}:1</span></div><div style={{fontSize:12,color:ok?T.textFaint:T.danger,fontFamily:"'DM Sans',sans-serif"}}>{ok?"Well balanced":r>1.4?"Too much push":"Too much pull"}</div></div>);})()}
+                          {upper>0&&lower>0&&(()=>{const r=upper/lower;const ok=r>=0.8&&r<=2.5;return(<div><div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}><span style={{fontSize:13,fontFamily:"'DM Sans',sans-serif",color:T.textBody}}>Upper / Lower</span><span style={{fontFamily:"'DM Mono',monospace",fontSize:13,fontWeight:600,color:ok?T.accent:T.danger}}>{r.toFixed(1)}:1</span></div><div style={{fontSize:12,color:ok?T.textFaint:T.danger,fontFamily:"'DM Sans',sans-serif"}}>{ok?"Good balance":r>2.5?"Add more leg work":"Add more upper body"}</div></div>);})()}
+                        </div>
                       )}
-                    </div>
-                  )}
-                </div>
-              );
-            })()}
-          </div>
-        )}
-
-        {/* ── BODY ── */}
-        {view==="body" && (
-          <div>
-            <div style={{ display:"flex", gap:8, marginBottom:20 }}>
-              {[["log","Log Weight"],["chart","Chart"]].map(([id,label])=>(
-                <button key={id} style={{ ...btn("sm"), background:measView===id?T.accent:T.bgSm, color:measView===id?"#fff":T.textBody, border:measView===id?"none":`1px solid ${T.bgSmBorder}` }}
-                  onClick={()=>setMeasView(id)}>{label}</button>
-              ))}
-            </div>
-
-            {measView==="log" && (
-              <div>
-                <div style={{ ...card, marginBottom:20 }}>
-                  <div style={lbl}>Log Body Weight</div>
-                  <div style={{ display:"flex", flexDirection:"column", gap:10, marginBottom:12 }}>
-                    <div>
-                      <div style={{ fontSize:11, color:T.textFaint, marginBottom:6, fontFamily:"'DM Sans',sans-serif" }}>Date</div>
-                      <div style={{ overflow:"hidden", borderRadius:8, border:`1px solid ${T.bgInputBorder}`, background:T.bgInput }}>
-                        <input style={{ ...input, border:"none", background:"transparent", width:"100%", display:"block" }} type="date" value={measDateDraft} onChange={e=>setMeasDateDraft(e.target.value)} />
-                      </div>
-                    </div>
-                    <div>
-                      <div style={{ fontSize:11, color:T.textFaint, marginBottom:6, fontFamily:"'DM Sans',sans-serif" }}>Weight (lbs)</div>
-                      <input style={input} type="number" step="0.1" placeholder="185.0" value={measWeightDraft}
-                        onChange={e=>setMeasWeightDraft(e.target.value)}
-                        onKeyDown={e=>{ if(e.key==="Enter") addMeasurement(); }} />
-                    </div>
-                  </div>
-                  <button style={{ ...btn("primary"), width:"100%" }} onClick={addMeasurement}>Save Entry</button>
-                  {measSaved && <div style={{ marginTop:10, fontSize:13, color:T.accentText, textAlign:"center", fontFamily:"'DM Sans',sans-serif" }}>✓ Saved!</div>}
-                </div>
-                {measurements.length>=2 && (()=>{
-                  const first = measurements[0].weight, latest = measurements[measurements.length-1].weight;
-                  const diff = (latest-first).toFixed(1), sign = diff>0?"+":"";
-                  return (
-                    <div style={{ display:"flex", gap:10, marginBottom:20 }}>
-                      <StatCard T={T} label="Current" value={`${latest} lbs`} />
-                      <StatCard T={T} label="Change" value={`${sign}${diff}`} sub="lbs from start" />
                     </div>
                   );
                 })()}
-                <div style={lbl}>History</div>
-                {measurements.length===0 && <div style={{ color:T.textFaint, fontSize:14, textAlign:"center", padding:"32px 0", fontFamily:"'DM Sans',sans-serif" }}>No entries yet.</div>}
-                {[...measurements].reverse().map(m=>(
-                  <div key={m.id} style={{ ...card, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-                    <div style={{ fontSize:13, color:T.textMuted, fontFamily:"'DM Sans',sans-serif" }}>{formatDate(m.date)}</div>
-                    <div style={{ display:"flex", alignItems:"center", gap:12 }}>
-                      <div style={{ fontFamily:"'DM Mono',monospace", fontWeight:600, fontSize:18, color:T.textPrimary }}>{m.weight} <span style={{ fontSize:12, color:T.textFaint, fontWeight:400 }}>lbs</span></div>
-                      <button style={{ background:"none", border:"none", color:T.textFaint, cursor:"pointer", fontSize:16 }} onClick={()=>deleteMeasurement(m.id)}>×</button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ===== NUTRITION ===== */}
+        {view==="nutrition"&&(
+          <div>
+            {/* 7-day tab strip */}
+            {nutView!=="log"&&(
+              <div style={{display:"flex",gap:4,marginBottom:16}}>
+                {Array.from({length:7},(_,i)=>{
+                  const d=new Date(); d.setDate(d.getDate()-i);
+                  const ds=d.toDateString();
+                  const hasFd=nutrition.some(e=>new Date(e.date).toDateString()===ds);
+                  const lbl2=i===0?"Today":i===1?"Yest":d.toLocaleDateString("en-US",{weekday:"short"});
+                  const active=nutDay===i&&nutView==="day";
+                  return (
+                    <button key={i} onClick={()=>{setNutDay(i);setNutView("day");}} style={{flex:1,padding:"7px 2px",borderRadius:8,border:"none",cursor:"pointer",fontSize:11,fontWeight:600,fontFamily:"'DM Sans',sans-serif",position:"relative",background:active?T.accent:T.bgSm,color:active?"#fff":T.textMuted,whiteSpace:"nowrap"}}>
+                      {lbl2}
+                      {hasFd&&!active&&<div style={{position:"absolute",top:3,right:3,width:4,height:4,borderRadius:"50%",background:active?"#fff":T.accent}}/>}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Day view */}
+            {nutView==="log"&&(
+              <button onClick={()=>setNutView("day")} style={{...btn("sm"),marginBottom:16}}>Back</button>
+            )}
+
+            {nutView==="day"&&(
+              <div>
+                <div style={{...card,marginBottom:16}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:16}}>
+                    <div style={{flex:1}}>
+                      <div style={{fontSize:11,color:T.textFaint,textTransform:"uppercase",letterSpacing:"0.1em",fontFamily:"'DM Sans',sans-serif",fontWeight:600,marginBottom:4}}>Calories</div>
+                      <div style={{display:"flex",alignItems:"baseline",gap:6}}>
+                        <div style={{fontSize:40,fontWeight:700,fontFamily:"'DM Mono',monospace",color:T.textPrimary,lineHeight:1}}>{dayTots.calories}</div>
+                        <div style={{fontSize:15,color:T.textFaint,fontFamily:"'DM Sans',sans-serif"}}>/ {nutTargets.calories}</div>
+                      </div>
+                      <div style={{height:6,background:T.bgSm,borderRadius:3,marginTop:10,width:"80%",overflow:"hidden"}}>
+                        <div style={{height:"100%",width:Math.min((dayTots.calories/nutTargets.calories)*100,100)+"%",background:dayTots.calories>nutTargets.calories?T.danger:T.accent,borderRadius:3}}/>
+                      </div>
+                      <div style={{fontSize:12,color:T.textFaint,fontFamily:"'DM Sans',sans-serif",marginTop:6}}>{Math.max(0,nutTargets.calories-dayTots.calories)} kcal remaining</div>
+                    </div>
+                    <div style={{position:"relative",width:72,height:72,flexShrink:0}}>
+                      <svg width="72" height="72" style={{transform:"rotate(-90deg)"}}>
+                        <circle cx="36" cy="36" r="28" fill="none" stroke={T.bgSm} strokeWidth="6"/>
+                        <circle cx="36" cy="36" r="28" fill="none" stroke={dayTots.calories>nutTargets.calories?T.danger:T.accent} strokeWidth="6"
+                          strokeDasharray={Math.min(dayTots.calories/nutTargets.calories,1)*2*Math.PI*28+" "+2*Math.PI*28} strokeLinecap="round"/>
+                      </svg>
+                      <div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",fontFamily:"'DM Mono',monospace",fontSize:13,fontWeight:700,color:T.textPrimary}}>
+                        {nutTargets.calories>0?Math.round((dayTots.calories/nutTargets.calories)*100)+"%":"--"}
+                      </div>
+                    </div>
+                  </div>
+                  {[["Protein","protein","#60a5fa"],["Carbs","carbs","#a78bfa"],["Fat","fat","#fb923c"]].map(([l,k,c])=>(
+                    <div key={k} style={{marginBottom:10}}>
+                      <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
+                        <span style={{fontSize:13,fontFamily:"'DM Sans',sans-serif",color:T.textBody,fontWeight:500}}>{l}</span>
+                        <span style={{fontSize:12,fontFamily:"'DM Mono',monospace",color:T.textMuted}}>{dayTots[k]}<span style={{color:T.textFaint}}>/{nutTargets[k]}g</span></span>
+                      </div>
+                      <div style={{height:7,background:T.bgSm,borderRadius:4,overflow:"hidden"}}>
+                        <div style={{height:"100%",width:Math.min((dayTots[k]/nutTargets[k])*100,100)+"%",background:c,borderRadius:4}}/>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div style={{display:"flex",gap:8,marginBottom:20}}>
+                  {[["P",dayTots.protein+"g","#60a5fa"],["C",dayTots.carbs+"g","#a78bfa"],["F",dayTots.fat+"g","#fb923c"]].map(([l,v,c])=>(
+                    <div key={l} style={{flex:1,background:T.bgCard,border:"1px solid "+T.bgCardBorder,borderRadius:12,padding:"10px 0",textAlign:"center"}}>
+                      <div style={{fontSize:11,color:T.textFaint,fontFamily:"'DM Sans',sans-serif",fontWeight:600,marginBottom:3}}>{l}</div>
+                      <div style={{fontSize:16,fontWeight:700,fontFamily:"'DM Mono',monospace",color:c}}>{v}</div>
+                    </div>
+                  ))}
+                </div>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+                  <div style={lbl}>{nutDay===0?"Today's Food":nutDay===1?"Yesterday's Food":"Food"}</div>
+                  <button style={{...btn("primary"),padding:"7px 14px",fontSize:12,borderRadius:10}} onClick={()=>setNutView("log")}>+ Add</button>
+                </div>
+                {dayNut.length===0&&<div style={{color:T.textFaint,fontSize:14,textAlign:"center",padding:"24px 0",fontFamily:"'DM Sans',sans-serif"}}>{nutDay===0?"No food logged today.":"Nothing logged."}</div>}
+                {dayNut.map(e=>(
+                  <div key={e.id} style={{...card,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{fontSize:14,fontWeight:600,color:T.textPrimary,fontFamily:"'DM Sans',sans-serif",textTransform:"capitalize"}}>{e.name}</div>
+                      <div style={{fontSize:11,color:T.textFaint,fontFamily:"'DM Sans',sans-serif",marginTop:2}}>{e.qty!==1?e.qty+" x ":""}{e.serving} - P:{e.protein}g C:{e.carbs}g F:{e.fat}g</div>
+                    </div>
+                    <div style={{display:"flex",alignItems:"center",gap:10,flexShrink:0}}>
+                      <div style={{fontFamily:"'DM Mono',monospace",fontWeight:700,fontSize:15,color:T.textPrimary}}>{e.calories}<span style={{fontSize:11,color:T.textFaint,fontWeight:400}}> kcal</span></div>
+                      <button style={{background:"none",border:"none",color:T.textFaint,cursor:"pointer",fontSize:16}} onClick={()=>delFood(e.id)}>x</button>
                     </div>
                   </div>
                 ))}
               </div>
             )}
 
-            {measView==="chart" && (
+            {/* Log food */}
+            {nutView==="log"&&(
               <div>
-                {measurements.length<2 ? (
-                  <div style={{ color:T.textFaint, fontSize:14, textAlign:"center", padding:"60px 0", fontFamily:"'DM Sans',sans-serif" }}>Log at least 2 entries to see your chart.</div>
-                ) : (()=>{
-                  const diff = (measurements[measurements.length-1].weight - measurements[0].weight).toFixed(1);
-                  const sign = diff>0?"+":"";
-                  const diffColor = diff<0?T.accentText:diff>0?T.danger:T.textMuted;
+                <div style={{marginBottom:16}}>
+                  <div style={lbl}>Search Food</div>
+                  <div style={{display:"flex",gap:8}}>
+                    <input style={{...inp,flex:1}} placeholder="e.g. chicken breast, banana..." value={foodQuery}
+                      onChange={e=>setFoodQuery(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")searchFood(foodQuery);}}/>
+                    <button style={btn("primary")} onClick={()=>searchFood(foodQuery)}>Search</button>
+                  </div>
+                  {foodLoading&&<div style={{fontSize:12,color:T.textFaint,fontFamily:"'DM Sans',sans-serif",marginTop:8}}>Searching...</div>}
+                  {foodErr&&<div style={{fontSize:12,color:T.danger,fontFamily:"'DM Sans',sans-serif",marginTop:8}}>{foodErr}</div>}
+                  {!NIX_ID&&<div style={{fontSize:11,color:T.textFaint,fontFamily:"'DM Sans',sans-serif",marginTop:6}}>Add Nutritionix API keys in Body {"> "} Settings to enable search.</div>}
+                </div>
+                {selFood&&(
+                  <div style={{...card,background:T.accentDark,border:"1px solid "+T.accentBorder,marginBottom:16}}>
+                    <div style={{fontSize:16,fontWeight:700,color:T.textPrimary,textTransform:"capitalize",marginBottom:2}}>{selFood.name}</div>
+                    <div style={{fontSize:12,color:T.textFaint,fontFamily:"'DM Sans',sans-serif",marginBottom:14}}>{selFood.brand} - per {selFood.qty} {selFood.serving}</div>
+                    <div style={{display:"flex",gap:12,marginBottom:16}}>
+                      {[["Cal",Math.round((selFood.calories||0)*(parseFloat(foodQty)||1)),"kcal",T.textPrimary],["P",Math.round((selFood.protein||0)*(parseFloat(foodQty)||1)),"g","#60a5fa"],["C",Math.round((selFood.carbs||0)*(parseFloat(foodQty)||1)),"g","#a78bfa"],["F",Math.round((selFood.fat||0)*(parseFloat(foodQty)||1)),"g","#fb923c"]].map(([l,v,u,c])=>(
+                        <div key={l} style={{flex:1,textAlign:"center",background:"rgba(0,0,0,0.15)",borderRadius:10,padding:"8px 4px"}}>
+                          <div style={{fontSize:10,color:T.textFaint,fontFamily:"'DM Sans',sans-serif",fontWeight:600,textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:3}}>{l}</div>
+                          <div style={{fontSize:18,fontWeight:700,fontFamily:"'DM Mono',monospace",color:c}}>{v}</div>
+                          <div style={{fontSize:10,color:T.textFaint,fontFamily:"'DM Sans',sans-serif"}}>{u}</div>
+                        </div>
+                      ))}
+                    </div>
+                    <div style={{display:"flex",gap:10,alignItems:"flex-end"}}>
+                      <div style={{flex:1}}>
+                        <div style={{fontSize:11,color:T.textFaint,fontFamily:"'DM Sans',sans-serif",marginBottom:6}}>Servings</div>
+                        <input style={inp} type="number" step="0.5" min="0.5" value={foodQty} onChange={e=>setFoodQty(e.target.value)}/>
+                      </div>
+                      <button style={{...btn("primary"),flex:2,padding:"11px 0"}} onClick={logFood}>Log Food</button>
+                    </div>
+                    {foodSaved&&<div style={{marginTop:10,fontSize:13,color:T.accentText,fontFamily:"'DM Sans',sans-serif"}}>Added!</div>}
+                  </div>
+                )}
+                {foodResults.length>0&&!selFood&&(
+                  <div>
+                    <div style={lbl}>Results</div>
+                    {foodResults.map((f,i)=>(
+                      <div key={i} onClick={()=>pickFood(f)} style={{...card,cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                        <div style={{minWidth:0,flex:1}}>
+                          <div style={{fontSize:14,fontWeight:600,color:T.textPrimary,fontFamily:"'DM Sans',sans-serif",textTransform:"capitalize"}}>{f.name}</div>
+                          <div style={{fontSize:11,color:T.textFaint,fontFamily:"'DM Sans',sans-serif",marginTop:2}}>{f.brand} - {f.qty} {f.serving}</div>
+                        </div>
+                        <div style={{display:"flex",alignItems:"center",gap:8,flexShrink:0,marginLeft:12}}>
+                          {f.calories&&<div style={{fontFamily:"'DM Mono',monospace",fontWeight:700,fontSize:15,color:T.textPrimary}}>{Math.round(f.calories)}<span style={{fontSize:11,color:T.textFaint}}> kcal</span></div>}
+                          <div style={{fontSize:12,color:T.textFaint}}>{">"}</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Targets */}
+          </div>
+        )}
+
+        {/* ===== BODY ===== */}
+        {view==="body"&&(
+          <div>
+            <div style={{display:"flex",gap:6,marginBottom:20,background:T.bgSm,borderRadius:12,padding:4}}>
+              {[["log","Weight"],["chart","Chart"]].map(([id,label])=>(
+                <button key={id} style={{flex:1,padding:"8px 0",borderRadius:9,border:"none",cursor:"pointer",fontSize:12,fontWeight:600,fontFamily:"'DM Sans',sans-serif",background:measView===id?T.bgCard:"transparent",color:measView===id?T.textPrimary:T.textFaint,boxShadow:measView===id?"0 1px 4px rgba(0,0,0,0.12)":"none"}} onClick={()=>setMeasView(id)}>{label}</button>
+              ))}
+            </div>
+
+            {measView==="log"&&(
+              <div>
+                <div style={{...card,marginBottom:20}}>
+                  <div style={lbl}>Log Body Weight</div>
+                  <div style={{display:"flex",flexDirection:"column",gap:10,marginBottom:12}}>
+                    <div>
+                      <div style={{fontSize:11,color:T.textFaint,marginBottom:6,fontFamily:"'DM Sans',sans-serif"}}>Date</div>
+                      <div style={{overflow:"hidden",borderRadius:8,border:"1px solid "+T.bgInputBorder,background:T.bgInput}}>
+                        <input style={{...inp,border:"none",background:"transparent",display:"block"}} type="date" value={measDate} onChange={e=>setMeasDate(e.target.value)}/>
+                      </div>
+                    </div>
+                    <div>
+                      <div style={{fontSize:11,color:T.textFaint,marginBottom:6,fontFamily:"'DM Sans',sans-serif"}}>Weight (lbs)</div>
+                      <input style={inp} type="number" step="0.1" placeholder="185.0" value={measWeight} onChange={e=>setMeasWeight(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")saveMeas();}}/>
+                    </div>
+                  </div>
+                  <button style={{...btn("primary"),width:"100%"}} onClick={saveMeas}>Save Entry</button>
+                  {measSaved&&<div style={{marginTop:10,fontSize:13,color:T.accentText,textAlign:"center",fontFamily:"'DM Sans',sans-serif"}}>Saved!</div>}
+                </div>
+                {measurements.length>=2&&(()=>{
+                  const f=measurements[0].weight,l=measurements[measurements.length-1].weight;
+                  const diff=(l-f).toFixed(1),sign=diff>0?"+":"";
+                  return (
+                    <div style={{display:"flex",gap:10,marginBottom:20}}>
+                      <div style={{...card,flex:1,marginBottom:0}}><div style={{...lbl,marginBottom:6}}>Current</div><div style={{fontSize:22,fontWeight:700,fontFamily:"'DM Mono',monospace",color:T.textPrimary}}>{l} lbs</div></div>
+                      <div style={{...card,flex:1,marginBottom:0}}><div style={{...lbl,marginBottom:6}}>Change</div><div style={{fontSize:22,fontWeight:700,fontFamily:"'DM Mono',monospace",color:diff<0?T.accentText:diff>0?T.danger:T.textFaint}}>{sign}{diff} lbs</div></div>
+                    </div>
+                  );
+                })()}
+                <div style={lbl}>History</div>
+                {measurements.length===0&&<div style={{color:T.textFaint,fontSize:14,textAlign:"center",padding:"32px 0",fontFamily:"'DM Sans',sans-serif"}}>No entries yet.</div>}
+                {[...measurements].reverse().map(m=>(
+                  <div key={m.id} style={{...card,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                    <div style={{fontSize:13,color:T.textMuted,fontFamily:"'DM Sans',sans-serif"}}>{fmtDate(m.date)}</div>
+                    <div style={{display:"flex",alignItems:"center",gap:12}}>
+                      <div style={{fontFamily:"'DM Mono',monospace",fontWeight:600,fontSize:18,color:T.textPrimary}}>{m.weight} <span style={{fontSize:12,color:T.textFaint,fontWeight:400}}>lbs</span></div>
+                      <button style={{background:"none",border:"none",color:T.textFaint,cursor:"pointer",fontSize:16}} onClick={()=>delMeas(m.id)}>x</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {measView==="chart"&&(
+              <div>
+                {measurements.length<2?(
+                  <div style={{color:T.textFaint,fontSize:14,textAlign:"center",padding:"60px 0",fontFamily:"'DM Sans',sans-serif"}}>Log at least 2 entries to see your chart.</div>
+                ):(()=>{
+                  const diff=(measurements[measurements.length-1].weight-measurements[0].weight).toFixed(1);
+                  const sign=diff>0?"+":"";
+                  const col=diff<0?T.accentText:diff>0?T.danger:T.textMuted;
                   return (
                     <>
-                      <div style={{ display:"flex", gap:10, marginBottom:20 }}>
-                        <StatCard T={T} label="Start"  value={`${measurements[0].weight} lbs`} sub={formatShortDate(measurements[0].date)} />
-                        <StatCard T={T} label="Latest" value={`${measurements[measurements.length-1].weight} lbs`} sub={formatShortDate(measurements[measurements.length-1].date)} />
+                      <div style={{display:"flex",gap:10,marginBottom:20}}>
+                        <div style={{...card,flex:1,marginBottom:0}}><div style={{...lbl,marginBottom:6}}>Start</div><div style={{fontSize:20,fontWeight:700,fontFamily:"'DM Mono',monospace",color:T.textPrimary}}>{measurements[0].weight} lbs</div><div style={{fontSize:11,color:T.textFaint,fontFamily:"'DM Sans',sans-serif"}}>{fmtShort(measurements[0].date)}</div></div>
+                        <div style={{...card,flex:1,marginBottom:0}}><div style={{...lbl,marginBottom:6}}>Latest</div><div style={{fontSize:20,fontWeight:700,fontFamily:"'DM Mono',monospace",color:T.textPrimary}}>{measurements[measurements.length-1].weight} lbs</div><div style={{fontSize:11,color:T.textFaint,fontFamily:"'DM Sans',sans-serif"}}>{fmtShort(measurements[measurements.length-1].date)}</div></div>
                       </div>
-                      <div style={{ ...card, textAlign:"center", marginBottom:20 }}>
-                        <div style={{ fontSize:11, color:T.textFaint, letterSpacing:"0.1em", textTransform:"uppercase", marginBottom:6, fontFamily:"'DM Sans',sans-serif" }}>Total Change</div>
-                        <div style={{ fontSize:32, fontWeight:700, fontFamily:"'DM Mono',monospace", color:diffColor }}>{sign}{diff} lbs</div>
-                        <div style={{ fontSize:12, color:T.textFaint, marginTop:4, fontFamily:"'DM Sans',sans-serif" }}>over {measurements.length} entries</div>
+                      <div style={{...card,textAlign:"center",marginBottom:20}}>
+                        <div style={{fontSize:11,color:T.textFaint,letterSpacing:"0.1em",textTransform:"uppercase",marginBottom:6,fontFamily:"'DM Sans',sans-serif"}}>Total Change</div>
+                        <div style={{fontSize:32,fontWeight:700,fontFamily:"'DM Mono',monospace",color:col}}>{sign}{diff} lbs</div>
+                        <div style={{fontSize:12,color:T.textFaint,marginTop:4,fontFamily:"'DM Sans',sans-serif"}}>over {measurements.length} entries</div>
                       </div>
-                      <div style={{ background:T.bgCard, borderRadius:14, padding:16, border:`1px solid ${T.bgCardBorder}`, marginBottom:20 }}>
-                        <div style={{ fontSize:12, color:T.textFaint, marginBottom:12, textTransform:"uppercase", letterSpacing:"0.1em", fontFamily:"'DM Sans',sans-serif" }}>Body Weight (lbs)</div>
-                        <svg width="100%" viewBox={`0 0 ${measW} ${measH}`} style={{ overflow:"visible" }}>
-                          <defs>
-                            <linearGradient id="bwGrad" x1="0" y1="0" x2="0" y2="1">
-                              <stop offset="0%" stopColor={T.accent} stopOpacity="0.25" />
-                              <stop offset="100%" stopColor={T.accent} stopOpacity="0" />
-                            </linearGradient>
-                          </defs>
-                          <path d={`${measPath} L ${measPts[measPts.length-1].x} ${measH} L ${measPts[0].x} ${measH} Z`} fill="url(#bwGrad)" />
-                          <path d={measPath} fill="none" stroke={T.accent} strokeWidth="2" strokeLinejoin="round" />
-                          {measPts.map((p,i)=>(
-                            <g key={i}>
-                              <circle cx={p.x} cy={p.y} r="4" fill={T.accent} />
-                              <text x={p.x} y={p.y-10} fill={T.textMuted} fontSize="9" textAnchor="middle">{p.weight}</text>
-                            </g>
-                          ))}
+                      <div style={{...card,marginBottom:20}}>
+                        <div style={{fontSize:12,color:T.textFaint,marginBottom:12,textTransform:"uppercase",letterSpacing:"0.1em",fontFamily:"'DM Sans',sans-serif"}}>Body Weight (lbs)</div>
+                        <svg width="100%" viewBox={"0 0 "+mW+" "+mH} style={{overflow:"visible"}}>
+                          <defs><linearGradient id="bwGrd" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={T.accent} stopOpacity="0.25"/><stop offset="100%" stopColor={T.accent} stopOpacity="0"/></linearGradient></defs>
+                          <path d={mPath+" L "+mPts[mPts.length-1].x+" "+mH+" L "+mPts[0].x+" "+mH+" Z"} fill="url(#bwGrd)"/>
+                          <path d={mPath} fill="none" stroke={T.accent} strokeWidth="2" strokeLinejoin="round"/>
+                          {mPts.map((p,i)=><g key={i}><circle cx={p.x} cy={p.y} r="4" fill={T.accent}/><text x={p.x} y={p.y-10} fill={T.textMuted} fontSize="9" textAnchor="middle">{p.weight}</text></g>)}
                         </svg>
-                        <div style={{ display:"flex", justifyContent:"space-between", marginTop:6 }}>
-                          <span style={{ fontSize:10, color:T.textVeryFaint, fontFamily:"'DM Sans',sans-serif" }}>{formatShortDate(measurements[0].date)}</span>
-                          <span style={{ fontSize:10, color:T.textVeryFaint, fontFamily:"'DM Sans',sans-serif" }}>{formatShortDate(measurements[measurements.length-1].date)}</span>
+                        <div style={{display:"flex",justifyContent:"space-between",marginTop:6}}>
+                          <span style={{fontSize:10,color:T.textVeryFaint,fontFamily:"'DM Sans',sans-serif"}}>{fmtShort(measurements[0].date)}</span>
+                          <span style={{fontSize:10,color:T.textVeryFaint,fontFamily:"'DM Sans',sans-serif"}}>{fmtShort(measurements[measurements.length-1].date)}</span>
                         </div>
                       </div>
                     </>
@@ -1569,174 +1620,278 @@ export default function App() {
                 })()}
               </div>
             )}
-          </div>
-        )}
 
-        {/* ── SETTINGS ── */}
-        {view==="settings" && (
-          <div>
-            {/* Theme toggle */}
-            <div style={lbl}>Appearance</div>
-            <div style={{ ...card, marginBottom:24 }}>
-              <div style={{ fontSize:13, color:T.textMuted, marginBottom:14, fontFamily:"'DM Sans',sans-serif" }}>
-                Auto switches to dark mode at <strong>8pm</strong> and back to light at <strong>6am</strong>.
+            {measView==="settings"&&(
+              <div style={{textAlign:"center",padding:"48px 0"}}>
+                <div style={{fontSize:14,color:T.textMuted,fontFamily:"'DM Sans',sans-serif",marginBottom:20}}>Settings have moved to the gear icon in the top right.</div>
+                <button style={btn("primary")} onClick={()=>setShowSettings(true)}>Open Settings</button>
               </div>
-              <div style={{ display:"flex", gap:8 }}>
-                {[["auto","Auto"],["light","Light"],["dark","Dark"]].map(([val,label])=>(
-                  <button key={val} onClick={()=>setThemePref(val)} style={{
-                    flex:1, padding:"10px 0", borderRadius:10, border:"none", cursor:"pointer",
-                    fontWeight:600, fontSize:13, fontFamily:"'DM Sans',sans-serif", transition:"all 0.15s",
-                    background: themePref===val ? T.accent : T.bgSm,
-                    color: themePref===val ? "#fff" : T.textMuted,
-                  }}>{label}</button>
-                ))}
-              </div>
-              <div style={{ marginTop:10, fontSize:12, color:T.textFaint, fontFamily:"'DM Sans',sans-serif" }}>
-                {themeLabel}
-              </div>
-            </div>
-
-            {/* Weight */}
-            <div style={{ ...card, marginBottom:24, background:T.accentDark, border:`1px solid ${T.accentBorder}` }}>
-              <div style={{ fontSize:15, fontWeight:600, color:T.textPrimary, marginBottom:6 }}>Weight Used for Calorie Estimates</div>
-              {measurements.length>0 ? (
-                <div style={{ fontSize:13, color:T.textMuted, fontFamily:"'DM Sans',sans-serif" }}>
-                  Pulling from your latest body measurement:{" "}
-                  <span style={{ color:T.accentText, fontFamily:"'DM Mono',monospace", fontWeight:600 }}>
-                    {measurements[measurements.length-1].weight} lbs
-                  </span>
-                  {" "}({formatDate(measurements[measurements.length-1].date)}).{" "}
-                  <span style={{ color:T.textFaint }}>Log a new entry in the Body tab to update it.</span>
-                </div>
-              ) : (
-                <div style={{ fontSize:13, color:T.textMuted, fontFamily:"'DM Sans',sans-serif" }}>
-                  No body measurements logged yet. You can set a manual weight below, or log entries in the{" "}
-                  <span style={{ color:T.accentText, cursor:"pointer" }} onClick={()=>setView("body")}>Body tab</span>.
-                </div>
-              )}
-            </div>
-
-            {measurements.length===0 && (
-              <>
-                <div style={lbl}>Manual Weight Override</div>
-                <div style={{ ...card, marginBottom:24 }}>
-                  <div style={{ fontSize:13, color:T.textMuted, marginBottom:14, fontFamily:"'DM Sans',sans-serif" }}>Used as a fallback when no body measurements are logged.</div>
-                  <div style={{ display:"flex", gap:10, alignItems:"center" }}>
-                    <div style={{ position:"relative", flex:1 }}>
-                      <input style={{ ...input, paddingRight:40 }} type="number" placeholder="e.g. 185" value={weightDraft}
-                        onChange={e=>setWeightDraft(e.target.value)} onKeyDown={e=>{ if(e.key==="Enter") saveManualWeight(); }} />
-                      <span style={{ position:"absolute", right:12, top:"50%", transform:"translateY(-50%)", fontSize:12, color:T.textFaint, fontFamily:"'DM Sans',sans-serif" }}>lbs</span>
-                    </div>
-                    <button style={btn("primary")} onClick={saveManualWeight}>Save</button>
-                  </div>
-                  {manualWeight && <div style={{ marginTop:12, fontSize:13, color:weightSaved?T.accentText:T.textFaint, fontFamily:"'DM Sans',sans-serif" }}>{weightSaved?"✓ Saved!":`Current: ${manualWeight} lbs`}</div>}
-                </div>
-              </>
             )}
-
-            <div style={lbl}>How Calorie Estimates Work</div>
-            <div style={card}>
-              <div style={{ fontSize:13, color:T.textMuted, lineHeight:1.7, marginBottom:14, fontFamily:"'DM Sans',sans-serif" }}>Estimates use MET (Metabolic Equivalent of Task) values — a research-based intensity measure — combined with your weight and workout duration.</div>
-              <div style={div_} />
-              <div style={{ fontSize:12, color:T.textFaint, lineHeight:2, fontFamily:"'DM Sans',sans-serif" }}>
-                {[["Strength · Light","2.5–3.5"],["Strength · Moderate","3.5–5.0"],["Strength · Hard","5.0–6.5"],null,["Run · Light","7.0–8.5"],["Run · Moderate","9.0–10.5"],["Run · Hard","11.0–13.0"]].map((row,i)=>
-                  row
-                    ? <div key={i} style={{ display:"flex", justifyContent:"space-between" }}><span>{row[0]}</span><span style={{ fontFamily:"'DM Mono',monospace", color:T.textMuted }}>{row[1]}</span></div>
-                    : <div key={i} style={{ height:1, background:T.divider, margin:"4px 0" }} />
-                )}
-              </div>
-              <div style={div_} />
-              <div style={{ fontSize:12, color:T.textVeryFaint, fontFamily:"'DM Sans',sans-serif" }}>Estimates are typically within ±15–20%. Actual burn varies with fitness level, rest periods, and metabolism.</div>
-            </div>
           </div>
         )}
 
       </div>
 
-      {/* ── Rest Timer Bar — floats above nav during active workout ── */}
-      {view==="log" && logStep==="details" && workoutType==="strength" && (
-        <RestTimerBar T={T} remaining={restRemaining} restDuration={restInterval} done={restDone}
-          onSkip={skipRestTimer} onRestart={()=>startRestTimer(restInterval)} />
+      {/* Rest timer */}
+      {view==="activities"&&logStep==="details"&&wType==="strength"&&(
+        <RestBar T={T} remaining={restLeft} duration={restSecs} done={restDone} onSkip={skipRest} onRestart={()=>startRest(restSecs)}/>
       )}
 
-      {/* ── Edit Modal ── */}
-      {editingWorkout && (
-        <div style={{ position:"fixed", inset:0, background:T.overlay, zIndex:200, display:"flex", alignItems:"flex-end", justifyContent:"center" }}
-          onClick={e=>{ if(e.target===e.currentTarget) setEditingWorkout(null); }}>
-          <div style={{ background:T.bgModal, borderRadius:"20px 20px 0 0", width:"100%", maxWidth:480, maxHeight:"85vh", overflowY:"auto", padding:20, paddingBottom:36, transition:"background 0.4s" }}>
-            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:20 }}>
-              <div style={{ fontWeight:700, fontSize:19, color:T.textPrimary }}>Edit Session</div>
-              <button style={{ background:"none", border:"none", color:T.textFaint, fontSize:22, cursor:"pointer" }} onClick={()=>setEditingWorkout(null)}>×</button>
+      {/* Settings modal */}
+      {showSettings&&(
+        <div style={{position:"fixed",inset:0,background:T.overlay,zIndex:200,display:"flex",alignItems:"flex-end",justifyContent:"center"}} onClick={e=>{if(e.target===e.currentTarget)setShowSettings(false);}}>
+          <div style={{background:T.bgModal,borderRadius:"20px 20px 0 0",width:"100%",maxWidth:480,maxHeight:"90vh",overflowY:"auto",padding:20,paddingBottom:36}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:24}}>
+              <div style={{fontWeight:700,fontSize:19,color:T.textPrimary}}>Settings</div>
+              <div style={{display:"flex",gap:8}}>
+                <button onClick={()=>supabase.auth.signOut()} style={{padding:"8px 14px",borderRadius:20,border:"1px solid "+T.dangerBorder,cursor:"pointer",fontSize:12,fontWeight:600,fontFamily:"'DM Sans',sans-serif",background:T.dangerDim,color:T.danger}}>Sign Out</button>
+                <button style={{background:"none",border:"none",color:T.textFaint,fontSize:22,cursor:"pointer"}} onClick={()=>setShowSettings(false)}>x</button>
+              </div>
             </div>
-            <div style={{ marginBottom:16 }}>
-              <div style={lbl}>Duration (min)</div>
-              <input style={input} type="number" value={editingWorkout.duration} onChange={e=>setEditingWorkout(p=>({ ...p, duration:parseInt(e.target.value)||0 }))} />
+
+            {/* Nutrition targets */}
+            <div style={lbl}>Nutrition Targets</div>
+            <div style={{...card,marginBottom:20}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+                <div style={{fontSize:15,fontWeight:600,color:T.textPrimary}}>Daily Targets</div>
+                <button style={btn("sm")} onClick={()=>{setEditTargets(!editTargets);setTargetDraft({...nutTargets});}}>{editTargets?"Cancel":"Edit"}</button>
+              </div>
+              {[["Calories","calories","kcal"],["Protein","protein","g"],["Carbs","carbs","g"],["Fat","fat","g"]].map(([label,k,unit],i,arr)=>(
+                <div key={k} style={{display:"flex",justifyContent:"space-between",alignItems:"center",paddingBottom:i<arr.length-1?12:0,marginBottom:i<arr.length-1?12:0,borderBottom:i<arr.length-1?"1px solid "+T.divider:"none"}}>
+                  <div style={{fontSize:14,fontFamily:"'DM Sans',sans-serif",color:T.textBody,fontWeight:500}}>{label}</div>
+                  {editTargets?(
+                    <input style={{...inp,width:110,textAlign:"right"}} type="number" value={targetDraft[k]} onChange={e=>setTargetDraft(p=>({...p,[k]:parseInt(e.target.value)||0}))}/>
+                  ):(
+                    <div style={{fontFamily:"'DM Mono',monospace",fontWeight:700,fontSize:16,color:T.textPrimary}}>{nutTargets[k]}<span style={{fontSize:12,color:T.textFaint,fontWeight:400}}> {unit}</span></div>
+                  )}
+                </div>
+              ))}
+              {editTargets&&<button style={{...btn("primary"),width:"100%",marginTop:14}} onClick={()=>{setNutTargets(targetDraft);setEditTargets(false);try{localStorage.setItem("liftr_nut_targets",JSON.stringify(targetDraft));}catch(e){}}}>Save Targets</button>}
+              {currentWeight&&(
+                <div style={{marginTop:14,paddingTop:14,borderTop:"1px solid "+T.divider,background:T.accentDark,borderRadius:10,padding:"12px 14px",marginTop:14}}>
+                  <div style={{fontSize:12,color:T.textFaint,fontFamily:"'DM Sans',sans-serif",marginBottom:4}}>Protein guide based on {currentWeight} lbs:</div>
+                  <div style={{fontFamily:"'DM Mono',monospace",fontWeight:700,fontSize:18,color:T.accentText}}>{Math.round(currentWeight*0.7)}-{Math.round(currentWeight*1.0)}g <span style={{fontSize:12,color:T.textFaint,fontWeight:400}}>/ day</span></div>
+                </div>
+              )}
             </div>
-            {editingWorkout.type==="strength" && (
-              <>
-                {editingWorkout.muscleGroups?.length > 0 && (
-                  <div style={{ marginBottom:16 }}>
-                    <div style={lbl}>Muscle Groups</div>
-                    <div style={{ fontSize:13, color:T.accentText, fontFamily:"'DM Sans',sans-serif", fontWeight:500 }}>
-                      {editingWorkout.muscleGroups.join(" + ")}
-                      <span style={{ color:T.textFaint, fontSize:12, fontWeight:400 }}> · auto-detected from exercises</span>
-                    </div>
+
+            {/* Profile */}
+            <div style={lbl}>Profile for Calorie Calculations</div>
+            <div style={{...card,marginBottom:20}}>
+              <div style={{display:"flex",flexDirection:"column",gap:12}}>
+                <div style={{display:"flex",gap:10}}>
+                  <div style={{flex:1}}>
+                    <div style={{fontSize:11,color:T.textFaint,marginBottom:6,fontFamily:"'DM Sans',sans-serif"}}>Height (inches)</div>
+                    <input style={inp} type="number" placeholder="72" value={profileDraft.height} onChange={e=>setProfileDraft(p=>({...p,height:e.target.value}))}/>
                   </div>
-                )}
-                {editingWorkout.exercises.map((ex,ei)=>(
-                  <div key={ei} style={{ ...card, marginBottom:12 }}>
-                    <div style={{ fontWeight:600, fontSize:15, marginBottom:10, color:T.textBody }}>{ex.name}</div>
-                    <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 32px", gap:8, marginBottom:6 }}>
-                      <div style={{ fontSize:10, color:T.textFaint, textTransform:"uppercase", fontFamily:"'DM Sans',sans-serif" }}>Weight (lbs)</div>
-                      <div style={{ fontSize:10, color:T.textFaint, textTransform:"uppercase", fontFamily:"'DM Sans',sans-serif" }}>Reps</div>
-                      <div />
-                    </div>
-                    {ex.sets.map((s,si)=>(
-                      <div key={si} style={{ display:"grid", gridTemplateColumns:"1fr 1fr 32px", gap:8, marginBottom:8 }}>
-                        <input style={input} type="number" value={s.weight} onChange={e=>updateEditSet(ei,si,"weight",e.target.value)} />
-                        <input style={input} type="number" value={s.reps}   onChange={e=>updateEditSet(ei,si,"reps",e.target.value)} />
-                        <button style={{ background:T.dangerDim, border:"none", borderRadius:6, color:T.danger, cursor:"pointer", fontSize:14 }} onClick={()=>removeEditSet(ei,si)}>×</button>
-                      </div>
+                  <div style={{flex:1}}>
+                    <div style={{fontSize:11,color:T.textFaint,marginBottom:6,fontFamily:"'DM Sans',sans-serif"}}>Age</div>
+                    <input style={inp} type="number" placeholder="30" value={profileDraft.age} onChange={e=>setProfileDraft(p=>({...p,age:e.target.value}))}/>
+                  </div>
+                </div>
+                <div>
+                  <div style={{fontSize:11,color:T.textFaint,marginBottom:8,fontFamily:"'DM Sans',sans-serif"}}>Biological Sex</div>
+                  <div style={{display:"flex",gap:8}}>
+                    {["male","female"].map(s=>(
+                      <button key={s} onClick={()=>setProfileDraft(p=>({...p,sex:s}))} style={{flex:1,padding:"10px 0",borderRadius:10,border:"none",cursor:"pointer",fontWeight:600,fontSize:13,fontFamily:"'DM Sans',sans-serif",textTransform:"capitalize",background:profileDraft.sex===s?T.accent:T.bgSm,color:profileDraft.sex===s?"#fff":T.textMuted}}>{s.charAt(0).toUpperCase()+s.slice(1)}</button>
                     ))}
-                    <button style={{ ...btn("sm"), width:"100%", marginTop:4 }} onClick={()=>addEditSet(ei)}>+ Set</button>
                   </div>
-                ))}
+                </div>
+                <button style={{...btn("primary"),width:"100%"}} onClick={saveProfile}>Save Profile</button>
+                {profileSaved&&<div style={{fontSize:13,color:T.accentText,fontFamily:"'DM Sans',sans-serif",textAlign:"center"}}>Saved!</div>}
+                {bmr&&<div style={{fontSize:12,color:T.textFaint,fontFamily:"'DM Sans',sans-serif",textAlign:"center"}}>Estimated BMR: <strong style={{color:T.textBody}}>{bmr} kcal/day</strong></div>}
+              </div>
+            </div>
+
+            {/* Manual weight */}
+            {measurements.length===0&&(
+              <>
+                <div style={lbl}>Manual Weight Fallback</div>
+                <div style={{...card,marginBottom:20}}>
+                  <div style={{display:"flex",gap:10,alignItems:"center"}}>
+                    <div style={{position:"relative",flex:1}}>
+                      <input style={{...inp,paddingRight:40}} type="number" placeholder="185" value={weightDraft} onChange={e=>setWeightDraft(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")saveManW();}}/>
+                      <span style={{position:"absolute",right:12,top:"50%",transform:"translateY(-50%)",fontSize:12,color:T.textFaint,fontFamily:"'DM Sans',sans-serif"}}>lbs</span>
+                    </div>
+                    <button style={btn("primary")} onClick={saveManW}>Save</button>
+                  </div>
+                  {manualWeight&&<div style={{marginTop:10,fontSize:13,color:weightSaved?T.accentText:T.textFaint,fontFamily:"'DM Sans',sans-serif"}}>{weightSaved?"Saved!":"Current: "+manualWeight+" lbs"}</div>}
+                </div>
               </>
             )}
-            {editingWorkout.type==="cardio" && (
-              <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
-                <div><div style={lbl}>Activity</div>
-                  <select style={sel} value={editingWorkout.cardioType} onChange={e=>setEditingWorkout(p=>({ ...p, cardioType:e.target.value }))}>
-                    {CARDIO_TYPES.map(t=><option key={t}>{t}</option>)}
-                  </select>
+
+            {/* Appearance */}
+            <div style={lbl}>Appearance</div>
+            <div style={{...card,marginBottom:20}}>
+              <div style={{fontSize:13,color:T.textMuted,marginBottom:12,fontFamily:"'DM Sans',sans-serif"}}>Auto switches to dark at 8pm, light at 6am.</div>
+              <div style={{display:"flex",gap:8}}>
+                {[["auto","Auto"],["light","Light"],["dark","Dark"]].map(([v,l])=>(
+                  <button key={v} onClick={()=>setThemePref(v)} style={{flex:1,padding:"10px 0",borderRadius:10,border:"none",cursor:"pointer",fontWeight:600,fontSize:13,fontFamily:"'DM Sans',sans-serif",background:themePref===v?T.accent:T.bgSm,color:themePref===v?"#fff":T.textMuted}}>{l}</button>
+                ))}
+              </div>
+            </div>
+
+            {/* API Keys */}
+            <div style={lbl}>Nutritionix API Keys</div>
+            <div style={card}>
+              <div style={{fontSize:13,color:T.textMuted,marginBottom:14,fontFamily:"'DM Sans',sans-serif"}}>Required for food search. Get free keys at developer.nutritionix.com</div>
+              <div style={{display:"flex",flexDirection:"column",gap:10}}>
+                <div>
+                  <div style={{fontSize:11,color:T.textFaint,marginBottom:6,fontFamily:"'DM Sans',sans-serif"}}>App ID</div>
+                  <input style={inp} type="text" placeholder="Your App ID" defaultValue={NIX_ID} onBlur={e=>{try{localStorage.setItem("liftr_nix_id",e.target.value);}catch(er){}}}/>
                 </div>
-                <div><div style={lbl}>Distance (mi)</div>
-                  <input style={input} type="number" step="0.1" value={editingWorkout.distance||""} onChange={e=>setEditingWorkout(p=>({ ...p, distance:parseFloat(e.target.value)||null }))} />
-                </div>
-                <div><div style={lbl}>Notes</div>
-                  <textarea style={{ ...input, resize:"vertical", minHeight:72 }} value={editingWorkout.notes||""} onChange={e=>setEditingWorkout(p=>({ ...p, notes:e.target.value }))} />
+                <div>
+                  <div style={{fontSize:11,color:T.textFaint,marginBottom:6,fontFamily:"'DM Sans',sans-serif"}}>App Key</div>
+                  <input style={inp} type="password" placeholder="Your App Key" defaultValue={NIX_KEY} onBlur={e=>{try{localStorage.setItem("liftr_nix_key",e.target.value);}catch(er){}}}/>
                 </div>
               </div>
-            )}
-            <div style={{ display:"flex", gap:10, marginTop:20 }}>
-              <button style={{ ...btn("secondary"), flex:1 }} onClick={()=>setEditingWorkout(null)}>Cancel</button>
-              <button style={{ ...btn("primary"), flex:2 }} onClick={saveEdit}>Save Changes</button>
             </div>
           </div>
         </div>
       )}
 
-      {/* ── Nav ── */}
-      <nav style={{ position:"fixed", bottom:0, left:"50%", transform:"translateX(-50%)", width:"100%", maxWidth:480, background:T.bgNav, backdropFilter:"blur(20px)", borderTop:`1px solid ${T.bgNavBorder}`, display:"flex", zIndex:100, transition:"background 0.4s" }}>
-        {navItems.map(item=>(
-          <div key={item.id}
-            style={{ flex:1, display:"flex", flexDirection:"column", alignItems:"center", padding:"10px 0", cursor:"pointer", gap:3, borderTop:view===item.id?`2px solid ${T.accent}`:"2px solid transparent" }}
-            onClick={()=>{ if(logStep!=="details"){ setView(item.id); if(item.id!=="log") setLogStep("type"); } else setView(item.id); }}>
-            <span style={{ fontSize:16, color:view===item.id?T.navIconActive:T.navIconInactive }}>{item.icon}</span>
-            <span style={{ fontSize:9, letterSpacing:"0.08em", textTransform:"uppercase", color:view===item.id?T.navLabelActive:T.navLabelInactive, fontWeight:600, fontFamily:"'DM Sans',sans-serif" }}>{item.label}</span>
+      {/* Edit modal */}
+      {editW&&(
+        <div style={{position:"fixed",inset:0,background:T.overlay,zIndex:200,display:"flex",alignItems:"flex-end",justifyContent:"center"}} onClick={e=>{if(e.target===e.currentTarget)setEditW(null);}}>
+          <div style={{background:T.bgModal,borderRadius:"20px 20px 0 0",width:"100%",maxWidth:480,maxHeight:"85vh",overflowY:"auto",padding:20,paddingBottom:36}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
+              <div style={{fontWeight:700,fontSize:19,color:T.textPrimary}}>Edit Session</div>
+              <button style={{background:"none",border:"none",color:T.textFaint,fontSize:22,cursor:"pointer"}} onClick={()=>setEditW(null)}>x</button>
+            </div>
+            <div style={{marginBottom:16}}>
+              <div style={lbl}>Duration (min)</div>
+              <input style={inp} type="number" value={editW.duration} onChange={e=>setEditW(p=>({...p,duration:parseInt(e.target.value)||0}))}/>
+            </div>
+            {editW.type==="strength"&&editW.exercises.map((ex,ei)=>(
+              <div key={ei} style={{...card,marginBottom:12}}>
+                <div style={{fontWeight:600,fontSize:15,marginBottom:10,color:T.textBody}}>{ex.name}</div>
+                {ex.sets.map((s,si)=>(
+                  <div key={si} style={{display:"grid",gridTemplateColumns:"1fr 1fr 32px",gap:8,marginBottom:8}}>
+                    <input style={inp} type="number" value={s.weight} onChange={e=>updEditSet(ei,si,"weight",e.target.value)}/>
+                    <input style={inp} type="number" value={s.reps}   onChange={e=>updEditSet(ei,si,"reps",e.target.value)}/>
+                    <button style={{background:T.dangerDim,border:"none",borderRadius:6,color:T.danger,cursor:"pointer",fontSize:14}} onClick={()=>remEditSet(ei,si)}>x</button>
+                  </div>
+                ))}
+                <button style={{...btn("sm"),width:"100%",marginTop:4}} onClick={()=>addEditSet(ei)}>+ Set</button>
+              </div>
+            ))}
+            {editW.type==="cardio"&&(
+              <div style={{display:"flex",flexDirection:"column",gap:14}}>
+                <div><div style={lbl}>Activity</div>
+                  <select style={sel} value={editW.cardioType} onChange={e=>setEditW(p=>({...p,cardioType:e.target.value}))}>
+                    {CARDIO_TYPES.map(t=><option key={t}>{t}</option>)}
+                  </select>
+                </div>
+                <div><div style={lbl}>Distance (mi)</div><input style={inp} type="number" step="0.1" value={editW.distance||""} onChange={e=>setEditW(p=>({...p,distance:parseFloat(e.target.value)||null}))}/></div>
+                <div><div style={lbl}>Notes</div><textarea style={{...inp,resize:"vertical",minHeight:72}} value={editW.notes||""} onChange={e=>setEditW(p=>({...p,notes:e.target.value}))}/></div>
+              </div>
+            )}
+            <div style={{display:"flex",gap:10,marginTop:20}}>
+              <button style={{...btn("sec"),flex:1}} onClick={()=>setEditW(null)}>Cancel</button>
+              <button style={{...btn("primary"),flex:2}} onClick={saveEdit}>Save Changes</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Nav */}
+      <nav style={{position:"fixed",bottom:0,left:"50%",transform:"translateX(-50%)",width:"100%",maxWidth:480,background:T.bgNav,backdropFilter:"blur(20px)",borderTop:"1px solid "+T.bgNavBorder,display:"flex",zIndex:100}}>
+        {nav.map(item=>(
+          <div key={item.id} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",padding:"10px 0",cursor:"pointer",gap:4,borderTop:view===item.id?"2px solid "+T.accent:"2px solid transparent"}}
+            onClick={()=>{
+              if(logStep!=="details"){setView(item.id);if(item.id!=="activities")setLogStep("type");}
+              else setView(item.id);
+            }}>
+            {navIcons[item.id](view===item.id)}
+            <span style={{fontSize:9,letterSpacing:"0.08em",textTransform:"uppercase",color:view===item.id?T.navLabelActive:T.navLabelInactive,fontWeight:600,fontFamily:"'DM Sans',sans-serif"}}>{item.label}</span>
           </div>
         ))}
       </nav>
     </div>
   );
+}
+
+function AuthScreen() {
+  const [mode, setMode] = useState("login");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+  const dark = isDarkHour();
+  const T = theme(dark);
+
+  async function submit() {
+    setLoading(true); setError(""); setMessage("");
+    try {
+      if (mode === "login") {
+        const {error:e} = await supabase.auth.signInWithPassword({email,password});
+        if (e) setError(e.message);
+      } else if (mode === "signup") {
+        const {error:e} = await supabase.auth.signUp({email,password});
+        if (e) setError(e.message);
+        else setMessage("Check your email to confirm your account, then log in.");
+      } else {
+        const {error:e} = await supabase.auth.resetPasswordForEmail(email);
+        if (e) setError(e.message);
+        else setMessage("Password reset email sent.");
+      }
+    } catch(e) { setError("Something went wrong."); }
+    setLoading(false);
+  }
+
+  const inp = {background:T.bgInput,border:"1px solid "+T.bgInputBorder,borderRadius:8,padding:"12px 16px",color:T.textBody,fontFamily:"'DM Sans',sans-serif",fontSize:15,width:"100%",boxSizing:"border-box",outline:"none"};
+
+  return (
+    <div style={{minHeight:"100vh",background:T.bg,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:24,maxWidth:480,margin:"0 auto"}}>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700&family=DM+Sans:wght@400;500;600&display=swap'); *{box-sizing:border-box;} input::placeholder{color:${T.textVeryFaint};}`}</style>
+      <div style={{textAlign:"center",marginBottom:40}}>
+        <div style={{fontSize:13,letterSpacing:"0.3em",textTransform:"uppercase",color:T.accentText,fontFamily:"'DM Sans',sans-serif",marginBottom:8}}>LIFTR</div>
+        <div style={{fontSize:32,fontWeight:700,color:T.textPrimary,fontFamily:"'Playfair Display',serif"}}>
+          {mode==="login"?"Welcome back":mode==="signup"?"Create account":"Reset password"}
+        </div>
+      </div>
+      <div style={{width:"100%",display:"flex",flexDirection:"column",gap:12}}>
+        <input style={inp} type="email" placeholder="Email address" value={email} onChange={e=>setEmail(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")submit();}}/>
+        {mode!=="reset"&&<input style={inp} type="password" placeholder="Password" value={password} onChange={e=>setPassword(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")submit();}}/>}
+        {error&&<div style={{fontSize:13,color:"#ef4444",fontFamily:"'DM Sans',sans-serif",textAlign:"center"}}>{error}</div>}
+        {message&&<div style={{fontSize:13,color:T.accentText,fontFamily:"'DM Sans',sans-serif",textAlign:"center"}}>{message}</div>}
+        <button onClick={submit} disabled={loading} style={{padding:"14px",borderRadius:10,border:"none",cursor:"pointer",fontWeight:600,fontSize:15,fontFamily:"'DM Sans',sans-serif",background:"#2563eb",color:"#fff",opacity:loading?0.6:1,marginTop:4}}>
+          {loading?"Please wait...":mode==="login"?"Sign In":mode==="signup"?"Create Account":"Send Reset Email"}
+        </button>
+      </div>
+      <div style={{marginTop:24,display:"flex",flexDirection:"column",gap:10,alignItems:"center"}}>
+        {mode==="login"&&<>
+          <button onClick={()=>{setMode("signup");setError("");setMessage("");}} style={{background:"none",border:"none",color:T.accentText,cursor:"pointer",fontSize:13,fontFamily:"'DM Sans',sans-serif"}}>Don't have an account? Sign up</button>
+          <button onClick={()=>{setMode("reset");setError("");setMessage("");}} style={{background:"none",border:"none",color:T.textFaint,cursor:"pointer",fontSize:13,fontFamily:"'DM Sans',sans-serif"}}>Forgot password?</button>
+        </>}
+        {mode!=="login"&&<button onClick={()=>{setMode("login");setError("");setMessage("");}} style={{background:"none",border:"none",color:T.accentText,cursor:"pointer",fontSize:13,fontFamily:"'DM Sans',sans-serif"}}>Back to sign in</button>}
+      </div>
+    </div>
+  );
+}
+
+export default function App() {
+  const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({data:{session}}) => {
+      setUser(session?.user??null);
+      setLoading(false);
+    });
+    const {data:{subscription}} = supabase.auth.onAuthStateChange((_e,session) => {
+      setUser(session?.user??null);
+    });
+    return () => subscription.unsubscribe();
+  }, []);
+
+  if (loading) return (
+    <div style={{minHeight:"100vh",background:"#0a0a0f",display:"flex",alignItems:"center",justifyContent:"center"}}>
+      <div style={{fontSize:13,letterSpacing:"0.3em",textTransform:"uppercase",color:"#93c5fd",fontFamily:"sans-serif"}}>LIFTR</div>
+    </div>
+  );
+
+  if (!user) return <AuthScreen />;
+  return <AppInner user={user} />;
 }
