@@ -261,8 +261,7 @@ function AppInner({user}) {
   const [foodSaved, setFoodSaved] = useState(false);
   const [editTargets, setEditTargets] = useState(false);
   const [targetDraft, setTargetDraft] = useState({calories:2500,protein:180,carbs:250,fat:80});
-  const [nixId, setNixId] = useState("");
-  const [nixKey, setNixKey] = useState("");
+  const [usdaKey, setUsdaKey] = useState("");
 
   // Supabase sync
   const [syncing, setSyncing] = useState(true);
@@ -289,8 +288,7 @@ function AppInner({user}) {
           if(s.profile){setProfile(s.profile);setProfileDraft(s.profile);}
           if(s.nutTargets){setNutTargets(s.nutTargets);setTargetDraft(s.nutTargets);}
           if(s.manualWeight){setManualWeight(s.manualWeight);setWeightDraft(s.manualWeight);}
-          if(s.nixId) setNixId(s.nixId);
-          if(s.nixKey) setNixKey(s.nixKey);
+          if(s.usdaKey) setUsdaKey(s.usdaKey);
         }
       } catch(e){console.error(e);}
       setSyncing(false);
@@ -301,7 +299,7 @@ function AppInner({user}) {
   useEffect(()=>{ if(!syncing) upsert("workouts",workouts); },[workouts]);
   useEffect(()=>{ if(!syncing) upsert("measurements",measurements); },[measurements]);
   useEffect(()=>{ if(!syncing) upsert("nutrition",nutrition); },[nutrition]);
-  useEffect(()=>{ if(!syncing) upsert("user_settings",{themePref,customEx,profile,nutTargets,manualWeight,nixId,nixKey}); },[themePref,customEx,profile,nutTargets,manualWeight,nixId,nixKey]);
+  useEffect(()=>{ if(!syncing) upsert("user_settings",{themePref,customEx,profile,nutTargets,manualWeight,usdaKey}); },[themePref,customEx,profile,nutTargets,manualWeight,usdaKey]);
 
   // Workout timer
   useEffect(()=>{
@@ -404,26 +402,67 @@ function AppInner({user}) {
 
   // Nutrition helpers
   async function searchFood(q) {
-    if(!q.trim())return;
+    if(!q.trim()) return;
     setFoodLoading(true); setFoodErr(""); setFoodResults([]);
     try {
-      const r=await fetch("https://trackapi.nutritionix.com/v2/search/instant?query="+encodeURIComponent(q),{headers:{"x-app-id":nixId,"x-app-key":nixKey}});
-      if(!r.ok)throw new Error("fail");
-      const d=await r.json();
-      setFoodResults([...(d.branded||[]).slice(0,5).map(f=>({name:f.food_name,brand:f.brand_name,calories:f.nf_calories,protein:f.nf_protein,carbs:f.nf_total_carbohydrate,fat:f.nf_total_fat,serving:f.serving_unit,qty:f.serving_qty})),...(d.common||[]).slice(0,5).map(f=>({name:f.food_name,brand:"Common",calories:null,protein:null,carbs:null,fat:null,serving:"serving",qty:1}))]);
-    } catch(e) { setFoodErr("Search failed. Add Nutritionix API keys in Settings."); }
+      const results = [];
+
+      // Search USDA FoodData Central
+      if (usdaKey) {
+        try {
+          const r = await fetch("https://api.nal.usda.gov/fdc/v1/foods/search?query="+encodeURIComponent(q)+"&pageSize=5&api_key="+usdaKey);
+          const d = await r.json();
+          (d.foods||[]).slice(0,5).forEach(f=>{
+            const nutrients = f.foodNutrients||[];
+            const get = id => { const n=nutrients.find(x=>x.nutrientId===id||x.nutrientNumber===String(id)); return n?Math.round(n.value||0):0; };
+            results.push({
+              name: f.description.toLowerCase(),
+              brand: f.brandOwner||f.brandName||"USDA",
+              calories: get(1008)||get(208),
+              protein:  get(1003)||get(203),
+              carbs:    get(1005)||get(205),
+              fat:      get(1004)||get(204),
+              serving:  f.servingSize?(f.servingSize+" "+(f.servingSizeUnit||"g")):"100g",
+              qty:      1,
+              source:   "usda"
+            });
+          });
+        } catch(e) { console.error("USDA error",e); }
+      }
+
+      // Search Open Food Facts (no key needed)
+      try {
+        const r = await fetch("https://world.openfoodfacts.org/cgi/search.pl?search_terms="+encodeURIComponent(q)+"&search_simple=1&action=process&json=1&page_size=5&fields=product_name,brands,nutriments,serving_size,serving_quantity");
+        const d = await r.json();
+        (d.products||[]).filter(p=>p.product_name).slice(0,5).forEach(f=>{
+          const n = f.nutriments||{};
+          const cals = Math.round(n["energy-kcal_serving"]||n["energy-kcal_100g"]||0);
+          if (!cals) return;
+          results.push({
+            name:    f.product_name.toLowerCase(),
+            brand:   f.brands||"Open Food Facts",
+            calories: cals,
+            protein:  Math.round(n["proteins_serving"]||n["proteins_100g"]||0),
+            carbs:    Math.round(n["carbohydrates_serving"]||n["carbohydrates_100g"]||0),
+            fat:      Math.round(n["fat_serving"]||n["fat_100g"]||0),
+            serving:  f.serving_size||"1 serving",
+            qty:      1,
+            source:   "off"
+          });
+        });
+      } catch(e) { console.error("Open Food Facts error",e); }
+
+      if (results.length === 0) {
+        setFoodErr(!usdaKey ? "Add your USDA API key in Settings to search foods." : "No results found. Try a different search term.");
+      } else {
+        setFoodResults(results);
+      }
+    } catch(e) { setFoodErr("Search failed. Try again."); }
     setFoodLoading(false);
   }
+
   async function pickFood(food) {
-    if(food.calories!==null){setSelFood(food);setFoodQty("1");return;}
-    setFoodLoading(true);
-    try {
-      const r=await fetch("https://trackapi.nutritionix.com/v2/natural/nutrients",{method:"POST",headers:{"x-app-id":nixId,"x-app-key":nixKey,"Content-Type":"application/json"},body:JSON.stringify({query:food.name})});
-      const d=await r.json();
-      const f=d.foods?.[0];
-      if(f)setSelFood({name:f.food_name,brand:"Common",calories:Math.round(f.nf_calories),protein:Math.round(f.nf_protein||0),carbs:Math.round(f.nf_total_carbohydrate||0),fat:Math.round(f.nf_total_fat||0),serving:f.serving_unit,qty:f.serving_qty});
-    } catch(e){}
-    setFoodLoading(false); setFoodQty("1");
+    setSelFood(food); setFoodQty("1");
   }
   function logFood() {
     if(!selFood)return;
@@ -1289,7 +1328,7 @@ function AppInner({user}) {
                   </div>
                   {foodLoading && <div style={{fontSize:12,color:T.textFaint,fontFamily:"'DM Sans',sans-serif",marginTop:8}}>Searching...</div>}
                   {foodErr && <div style={{fontSize:12,color:T.danger,fontFamily:"'DM Sans',sans-serif",marginTop:8}}>{foodErr}</div>}
-                  {!nixId && <div style={{fontSize:11,color:T.textFaint,fontFamily:"'DM Sans',sans-serif",marginTop:6}}>Add Nutritionix API keys in Settings to enable food search.</div>}
+                  {!usdaKey && <div style={{fontSize:11,color:T.textFaint,fontFamily:"'DM Sans',sans-serif",marginTop:6}}>Add your USDA API key in Settings for best results. Open Food Facts works without a key.</div>}
                 </div>
                 {selFood && (
                   <div style={{...card,background:T.accentDark,border:"1px solid "+T.accentBorder,marginBottom:16}}>
@@ -1321,10 +1360,13 @@ function AppInner({user}) {
                       <div key={i} onClick={()=>pickFood(f)} style={{...card,cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
                         <div style={{minWidth:0,flex:1}}>
                           <div style={{fontSize:14,fontWeight:600,color:T.textPrimary,fontFamily:"'DM Sans',sans-serif",textTransform:"capitalize"}}>{f.name}</div>
-                          <div style={{fontSize:11,color:T.textFaint,fontFamily:"'DM Sans',sans-serif",marginTop:2}}>{f.brand} - {f.qty} {f.serving}</div>
+                          <div style={{fontSize:11,color:T.textFaint,fontFamily:"'DM Sans',sans-serif",marginTop:2,display:"flex",alignItems:"center",gap:6}}>
+                            <span>{f.brand}</span>
+                            <span style={{fontSize:9,padding:"1px 6px",borderRadius:10,fontWeight:600,background:f.source==="usda"?T.accentDim:T.bgSm,color:f.source==="usda"?T.accentText:T.textFaint}}>{f.source==="usda"?"USDA":"OFF"}</span>
+                          </div>
                         </div>
                         <div style={{display:"flex",alignItems:"center",gap:8,flexShrink:0,marginLeft:12}}>
-                          {f.calories && <div style={{fontFamily:"'DM Mono',monospace",fontWeight:700,fontSize:15,color:T.textPrimary}}>{Math.round(f.calories)}<span style={{fontSize:11,color:T.textFaint}}> kcal</span></div>}
+                          {f.calories>0 && <div style={{fontFamily:"'DM Mono',monospace",fontWeight:700,fontSize:15,color:T.textPrimary}}>{f.calories}<span style={{fontSize:11,color:T.textFaint}}> kcal</span></div>}
                           <div style={{fontSize:12,color:T.textFaint}}>{">"}</div>
                         </div>
                       </div>
@@ -1544,19 +1586,20 @@ function AppInner({user}) {
               </div>
             </div>
 
-            <div style={lbl}>Nutritionix API Keys</div>
+            <div style={lbl}>Food Search API</div>
             <div style={card}>
-              <div style={{fontSize:13,color:T.textMuted,marginBottom:14,fontFamily:"'DM Sans',sans-serif"}}>Required for food search. Get free keys at developer.nutritionix.com</div>
-              <div style={{display:"flex",flexDirection:"column",gap:10}}>
-                <div>
-                  <div style={{fontSize:11,color:T.textFaint,marginBottom:6,fontFamily:"'DM Sans',sans-serif"}}>App ID</div>
-                  <input style={inp} type="text" placeholder="Your App ID" value={nixId} onChange={e=>setNixId(e.target.value)}/>
-                </div>
-                <div>
-                  <div style={{fontSize:11,color:T.textFaint,marginBottom:6,fontFamily:"'DM Sans',sans-serif"}}>App Key</div>
-                  <input style={inp} type="password" placeholder="Your App Key" value={nixKey} onChange={e=>setNixKey(e.target.value)}/>
-                </div>
+              <div style={{fontSize:13,color:T.textMuted,marginBottom:6,fontFamily:"'DM Sans',sans-serif"}}>
+                Food search uses <strong style={{color:T.textBody}}>USDA FoodData Central</strong> + <strong style={{color:T.textBody}}>Open Food Facts</strong> combined.
               </div>
+              <div style={{fontSize:12,color:T.textFaint,fontFamily:"'DM Sans',sans-serif",marginBottom:14}}>
+                Open Food Facts works without a key. Add a free USDA key at <span style={{color:T.accentText}}>fdc.nal.usda.gov/api-guide</span> for best whole-food results.
+              </div>
+              <div>
+                <div style={{fontSize:11,color:T.textFaint,marginBottom:6,fontFamily:"'DM Sans',sans-serif"}}>USDA API Key (free)</div>
+                <input style={inp} type="text" placeholder="Paste your USDA API key here" value={usdaKey} onChange={e=>setUsdaKey(e.target.value)}/>
+              </div>
+              {usdaKey && <div style={{marginTop:10,fontSize:12,color:T.accentText,fontFamily:"'DM Sans',sans-serif"}}>USDA key saved. Both databases active.</div>}
+              {!usdaKey && <div style={{marginTop:10,fontSize:12,color:T.textFaint,fontFamily:"'DM Sans',sans-serif"}}>Only Open Food Facts active (packaged foods). Add USDA key for whole foods.</div>}
             </div>
           </div>
         </div>
