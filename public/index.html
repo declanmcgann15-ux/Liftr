@@ -426,7 +426,11 @@ function AppInner({user}) {
       // Search USDA FoodData Central
       if (usdaKey) {
         try {
-          const r = await fetch("https://api.nal.usda.gov/fdc/v1/foods/search?query="+encodeURIComponent(q)+"&pageSize=5&api_key="+usdaKey);
+          // Search USDA Foundation + SR Legacy foods first (whole foods)
+          const r = await fetch(
+            "https://api.nal.usda.gov/fdc/v1/foods/search?query="+encodeURIComponent(q)+
+            "&dataType=Foundation,SR%20Legacy&pageSize=8&api_key="+usdaKey
+          );
           const d = await r.json();
           (d.foods||[]).slice(0,5).forEach(f=>{
             const nutrients = f.foodNutrients||[];
@@ -448,9 +452,9 @@ function AppInner({user}) {
 
       // Search Open Food Facts (no key needed)
       try {
-        const r = await fetch("https://world.openfoodfacts.org/cgi/search.pl?search_terms="+encodeURIComponent(q)+"&search_simple=1&action=process&json=1&page_size=5&fields=product_name,brands,nutriments,serving_size,serving_quantity");
-        const d = await r.json();
-        (d.products||[]).filter(p=>p.product_name).slice(0,5).forEach(f=>{
+        const r2 = await fetch("https://world.openfoodfacts.org/cgi/search.pl?search_terms="+encodeURIComponent(q)+"&search_simple=1&action=process&json=1&page_size=3&fields=product_name,brands,nutriments,serving_size,serving_quantity");
+        const d2 = await r2.json();
+        (d2.products||[]).filter(p=>p.product_name).slice(0,3).forEach(f=>{
           const n = f.nutriments||{};
           const cals = Math.round(n["energy-kcal_serving"]||n["energy-kcal_100g"]||0);
           if (!cals) return;
