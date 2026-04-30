@@ -268,7 +268,9 @@ function AppInner({user}) {
   const [syncing, setSyncing] = useState(true);
 
   const upsert = useCallback(async (table, data) => {
-    try { await sb.from(table).upsert({user_id:user.id, data},{onConflict:"user_id"}); } catch(e){}
+    try {
+      await sb.from(table).upsert({user_id:user.id, data},{onConflict:"user_id"});
+    } catch(e){ console.error(table, e); }
   },[user.id]);
 
   const [loaded, setLoaded] = useState(false);
